@@ -34,6 +34,17 @@ class TrainConfig:
     monitor: str = "auc"          # validation metric to select the best model on
     checkpoint_dir: str = "checkpoints"
     resume: bool = True
+    # ── CUDA speed flags ──────────────────────────────────────────────────────
+    # cudnn_benchmark: let cuDNN profile and cache the fastest conv kernel for
+    #   your exact input shape. Always True for fixed-size inputs (chest 320×320).
+    cudnn_benchmark: bool = True
+    # channels_last: store 2-D feature maps in NHWC order (N,H,W,C) instead of
+    #   NCHW. Tensor Cores on L4/A100 are 20-40% faster in this layout for 2-D
+    #   CNNs (DenseNet, ResNet, EfficientNet). Set False for 3-D/volumetric models.
+    channels_last: bool = False
+    # tf32: enable TF32 for fp32 matmul on Ampere+ GPUs (L4, A100). Near-lossless
+    #   10-bit mantissa vs 23-bit, ~3× faster for large linear layers.
+    tf32: bool = True
 
 
 class Trainer:
@@ -50,16 +61,37 @@ class Trainer:
         self.device = torch.device(
             device or ("cuda" if torch.cuda.is_available() else "cpu")
         )
-        self.model = model.to(self.device)
-        self.evaluator = evaluator
         self.config = config
+        self.use_amp = config.mixed_precision and self.device.type == "cuda"
+
+        # ── Global CUDA tuning (applied once, affects all subsequent ops) ──
+        if self.device.type == "cuda":
+            if config.tf32:
+                # TF32: free ~3× speedup for fp32 matmuls on Ampere+ (L4, A100).
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+            if config.cudnn_benchmark:
+                # Profile conv kernels once for your exact input shape and cache
+                # the fastest variant. Essential for fixed-size 2-D inputs.
+                torch.backends.cudnn.benchmark = True
+
+        # ── Model placement and memory format ──
+        self.channels_last = config.channels_last and self.device.type == "cuda"
+        mem_fmt = torch.channels_last if self.channels_last else torch.preserve_format
+        self.model = model.to(self.device, memory_format=mem_fmt)
+
+        self.evaluator = evaluator
         self.loss_fn = loss_fn or MultiTaskLoss()
         self.optimizer = optimizer or torch.optim.AdamW(
             self.model.parameters(), lr=config.lr, weight_decay=config.weight_decay
         )
         self.scheduler = scheduler
-        self.use_amp = config.mixed_precision and self.device.type == "cuda"
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        # torch.amp.GradScaler (2.3+) is the new home; fall back to the cuda-specific
+        # variant for the rare case someone pins an older torch.
+        if hasattr(torch.amp, "GradScaler"):
+            self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        else:
+            self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)  # <2.3 compat
         self.start_epoch = 0
         self.best_metric = float("-inf")
 
@@ -128,8 +160,13 @@ class Trainer:
         self.model.train()
         running, n = 0.0, 0
         for x, targets in loader:
-            x = x.to(self.device)
-            targets = {k: v.to(self.device) for k, v in targets.items()}
+            # non_blocking=True: H→D transfer runs in a CUDA stream while the CPU
+            # continues preparing the next batch. Only effective when the DataLoader
+            # uses pin_memory=True (which the Colab notebook does).
+            x = x.to(self.device, non_blocking=True)
+            if self.channels_last:
+                x = x.to(memory_format=torch.channels_last)
+            targets = {k: v.to(self.device, non_blocking=True) for k, v in targets.items()}
             self.optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=self.device.type, enabled=self.use_amp):
                 outputs = self.model(x)
@@ -150,10 +187,14 @@ class Trainer:
         self.evaluator.reset()
         running, n = 0.0, 0
         for x, targets in loader:
-            x = x.to(self.device)
-            targets = {k: v.to(self.device) for k, v in targets.items()}
-            outputs = self.model(x)
-            loss, _ = self.loss_fn(outputs, targets)
+            x = x.to(self.device, non_blocking=True)
+            if self.channels_last:
+                x = x.to(memory_format=torch.channels_last)
+            targets = {k: v.to(self.device, non_blocking=True) for k, v in targets.items()}
+            # autocast here too: validation forward should run in fp16 just like training.
+            with torch.autocast(device_type=self.device.type, enabled=self.use_amp):
+                outputs = self.model(x)
+                loss, _ = self.loss_fn(outputs, targets)
             running += float(loss) * x.size(0)
             n += x.size(0)
             logits = _classification_logits(outputs)
