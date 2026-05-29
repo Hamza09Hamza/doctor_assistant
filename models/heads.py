@@ -30,13 +30,21 @@ class Head(nn.Module):
 
 
 class ClassificationHead(Head):
-    """Global-pool the feature map, then a linear classifier -> class logits."""
+    """Global-pool the feature map, then a linear classifier -> class logits.
+
+    `multilabel` flips the *meaning* of the logits, not the layer: when True the
+    classes are independent (sigmoid + BCE) so several can fire at once — the chest
+    X-ray case, where one study is e.g. both Cardiomegaly and Effusion. When False
+    the classes are mutually exclusive (softmax + cross-entropy) — the brain-tumour
+    case. Decoders and losses read this flag to pick the right activation.
+    """
 
     task = TaskType.CLASSIFICATION
 
     def __init__(self, in_channels: int, num_classes: int, spatial_dims: int = 2,
-                 dropout: float = 0.2) -> None:
+                 dropout: float = 0.2, multilabel: bool = False) -> None:
         super().__init__()
+        self.multilabel = multilabel
         self.pool = _adaptive_avg_pool(spatial_dims)
         self.drop = nn.Dropout(dropout)
         self.fc = nn.Linear(in_channels, num_classes)

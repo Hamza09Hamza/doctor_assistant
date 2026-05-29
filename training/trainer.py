@@ -40,10 +40,11 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
-        evaluator: ClassificationEvaluator,
+        evaluator,  # ClassificationEvaluator or MultilabelEvaluator — same interface
         config: TrainConfig,
         loss_fn: nn.Module | None = None,
         optimizer: torch.optim.Optimizer | None = None,
+        scheduler: "torch.optim.lr_scheduler._LRScheduler | None" = None,
         device: torch.device | str | None = None,
     ) -> None:
         self.device = torch.device(
@@ -56,6 +57,7 @@ class Trainer:
         self.optimizer = optimizer or torch.optim.AdamW(
             self.model.parameters(), lr=config.lr, weight_decay=config.weight_decay
         )
+        self.scheduler = scheduler
         self.use_amp = config.mixed_precision and self.device.type == "cuda"
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         self.start_epoch = 0
@@ -105,7 +107,19 @@ class Trainer:
                 self.best_metric = score
                 self._save("best.pt", epoch)
 
-            record = {"epoch": epoch, "train_loss": train_loss, **metrics}
+            if self.scheduler is not None:
+                if hasattr(self.scheduler, "step"):
+                    import torch.optim.lr_scheduler as _sched
+                    if isinstance(self.scheduler, _sched.ReduceLROnPlateau):
+                        self.scheduler.step(score)
+                    else:
+                        self.scheduler.step()
+
+            record = {
+                "epoch": epoch, "train_loss": train_loss,
+                "lr": self.optimizer.param_groups[0]["lr"],
+                **metrics,
+            }
             history.append(record)
             self._log(record, score)
         return history
@@ -157,10 +171,15 @@ class Trainer:
 
     @staticmethod
     def _log(record: dict, score: float) -> None:
+        auc = record.get("auc")
+        auc_str = f"{auc:.4f}" if auc is not None else "n/a"
+        sens = record.get("sensitivity")
+        sens_str = f"{sens:.4f}" if sens is not None else "n/a"
         print(
             f"epoch {record['epoch']:3d} | "
-            f"train_loss {record['train_loss']:.4f} | "
-            f"val_loss {record.get('val_loss', float('nan')):.4f} | "
-            f"sens {record.get('sensitivity')} | spec {record.get('specificity')} | "
-            f"auc {record.get('auc')} | score {score:.4f}"
+            f"train {record['train_loss']:.4f} | "
+            f"val {record.get('val_loss', float('nan')):.4f} | "
+            f"lr {record.get('lr', 0):.2e} | "
+            f"sens {sens_str} | "
+            f"auc {auc_str} | best {score:.4f}"
         )

@@ -20,9 +20,16 @@ from core.types import HeadOutput
 
 
 class MultiTaskLoss(nn.Module):
-    def __init__(self, weights: dict[str, float] | None = None) -> None:
+    def __init__(
+        self,
+        weights: dict[str, float] | None = None,
+        multilabel: bool = False,
+    ) -> None:
         super().__init__()
         self.weights = weights or {}
+        # multilabel=True: chest X-ray style — labels co-occur, each treated independently.
+        # multilabel=False: brain-tumour style — mutually exclusive, softmax + CE.
+        self.multilabel = multilabel
         self.ce = nn.CrossEntropyLoss()
         self.bce = nn.BCEWithLogitsLoss()
         self._seg_loss = None  # built lazily so MONAI import isn't required for cls-only
@@ -56,11 +63,19 @@ class MultiTaskLoss(nn.Module):
 
     def _term(self, out: HeadOutput, targets, cls_logits):
         if out.task is TaskType.CLASSIFICATION and "label" in targets:
+            if self.multilabel:
+                # targets["label"] is a float multi-hot vector (batch, num_classes)
+                return self.bce(out.tensor, targets["label"].float())
             return self.ce(out.tensor, targets["label"])
         if out.task is TaskType.SEGMENTATION and "mask" in targets:
             return self._seg()(out.tensor, targets["mask"])
         if out.task is TaskType.CONFIDENCE and cls_logits is not None and "label" in targets:
-            correct = (cls_logits.argmax(dim=1) == targets["label"]).float().detach()
+            if self.multilabel:
+                # "correct" = all labels matched at threshold 0.5
+                pred = (cls_logits.sigmoid() > 0.5).float()
+                correct = (pred == targets["label"].float()).all(dim=1).float().detach()
+            else:
+                correct = (cls_logits.argmax(dim=1) == targets["label"]).float().detach()
             return self.bce(out.tensor, correct)
         return None
 

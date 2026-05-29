@@ -67,10 +67,13 @@ class BaseExpert(nn.Module):
         outputs = self.forward(x)
 
         prediction = Prediction(expert=self.name, meta=scan.meta)
-        for out in outputs.values():
+        for head_name, out in outputs.items():
             t = out.tensor[0]  # drop batch dim
             if out.task is TaskType.CLASSIFICATION:
-                probs = torch.softmax(t, dim=0).cpu()
+                # multilabel -> independent sigmoids (probs need not sum to 1);
+                # single-label -> softmax over mutually exclusive classes.
+                multilabel = getattr(self.heads[head_name], "multilabel", False)
+                probs = (torch.sigmoid(t) if multilabel else torch.softmax(t, dim=0)).cpu()
                 names = self._class_names(probs.numel())
                 prediction.class_probs = {n: float(p) for n, p in zip(names, probs)}
             elif out.task is TaskType.SEGMENTATION:
