@@ -1,0 +1,27 @@
+# Core DL stack
+torch>=2.2
+torchvision>=0.17
+
+# Medical imaging toolkit (IO, transforms, 3D nets, metrics)
+monai>=1.3
+nibabel>=5.2          # NIfTI IO
+pydicom>=2.4          # DICOM IO
+SimpleITK>=2.3        # robust medical volume IO / resampling
+
+# 2D pretrained backbones
+timm>=0.9
+
+# Imaging / arrays
+numpy>=1.26
+Pillow>=10.0
+scikit-image>=0.22
+
+# Metrics / evaluation
+scikit-learn>=1.4
+
+# Config
+PyYAML>=6.0
+pydantic>=2.6
+
+# Utilities
+tqdm>=4.66

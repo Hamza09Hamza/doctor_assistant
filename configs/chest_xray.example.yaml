@@ -1,0 +1,41 @@
+# Example expert configuration (schema preview).
+# A config loader/builder will consume this in a later layer; it documents the
+# shape an expert pack is declared in. 2D chest X-ray pneumonia screen as example.
+
+expert:
+  name: chest_xray_pneumonia
+  modality: xray
+  body_part: chest
+  class_names: [normal, pneumonia]
+
+backbone:
+  name: "timm:efficientnet_b0"   # 2D CNN with ImageNet weights
+  spatial_dims: 2
+  in_channels: 3
+  pretrained: true
+
+heads:
+  classification:
+    type: classification
+    num_classes: 2
+    dropout: 0.2
+  confidence:
+    type: confidence
+  # segmentation head omitted here; enable for tasks needing lesion masks:
+  # segmentation:
+  #   type: segmentation
+  #   num_classes: 2
+
+preprocess:
+  spatial_size: [224, 224]
+  in_channels: 3
+  intensity: scale          # scale | zscore | ct_window
+  augment: true
+  aug_prob: 0.3
+
+train:
+  epochs: 30
+  batch_size: 32
+  lr: 0.0003
+  mixed_precision: true     # Colab-friendly
+  checkpoint_dir: /content/drive/MyDrive/doctor-assistant/chest_xray   # resumable

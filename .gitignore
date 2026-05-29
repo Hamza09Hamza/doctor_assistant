@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+*.egg/
+
+# Data & weights (never commit raw scans or trained models)
+data/
+datasets/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Medical image files (keep out of git)
+*.dcm
+*.nii
+*.nii.gz
+
+# Logs / outputs
+runs/
+logs/
+outputs/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+.claude/
