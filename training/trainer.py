@@ -101,10 +101,12 @@ class Trainer:
 
     def _save(self, name: str, epoch: int) -> None:
         os.makedirs(self.config.checkpoint_dir, exist_ok=True)
+        # Unwrap compiled model so checkpoint keys never carry _orig_mod. prefix.
+        base = getattr(self.model, "_orig_mod", self.model)
         torch.save(
             {
                 "epoch": epoch,
-                "model": self.model.state_dict(),
+                "model": base.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
                 "scaler": self.scaler.state_dict(),
                 "best_metric": self.best_metric,
