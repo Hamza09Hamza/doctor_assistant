@@ -44,7 +44,7 @@ class Image2DLoader:
         else:  # (H, W, C) -> (C, H, W)
             arr = np.transpose(arr, (2, 0, 1))
 
-        data = torch.as_tensor(np.ascontiguousarray(arr), dtype=torch.float32)
+        data = torch.tensor(np.ascontiguousarray(arr).copy(), dtype=torch.float32)
         # Scale common integer dtypes to [0, 1]; leave already-float data alone.
         max_val = float(data.max()) if data.numel() else 1.0
         if max_val > 1.0:

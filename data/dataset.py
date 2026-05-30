@@ -77,6 +77,12 @@ class ScanDataset(Dataset):
         s = self.samples[i]
         scan = load_scan(s.path, modality=self.modality, body_part=self.body_part)
         x = self.preprocess(scan.data)
+        # MONAI transforms return MetaTensor; torch.compile's CUDA graph autotuner
+        # calls as_strided on it and fails. Strip to a plain contiguous tensor here.
+        if hasattr(x, 'as_tensor'):
+            x = x.as_tensor().contiguous()
+        elif not isinstance(x, torch.Tensor):
+            x = torch.as_tensor(x).contiguous()
 
         targets: dict[str, torch.Tensor] = {}
         if s.label is not None:
