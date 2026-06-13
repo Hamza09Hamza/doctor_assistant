@@ -11,6 +11,8 @@ venv/
 env/
 .ipynb_checkpoints/
 *.ipynb
+# Exception: system_test notebook has no credentials — safe to track
+!notebooks/system_test.ipynb
 *.egg/
 
 # Data & weights (never commit raw scans or trained models)
