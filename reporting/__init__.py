@@ -12,6 +12,7 @@ from .findings import (
     findings_from_classification,
     findings_from_mask,
 )
+from .guidelines import GuidelineEngine, Recommendation, Urgency
 from .reporter import (
     DISCLAIMER,
     AnthropicClient,
@@ -19,6 +20,7 @@ from .reporter import (
     Reporter,
     StructuredReport,
 )
+from .verifier import Verifier, VerificationResult
 
 __all__ = [
     "Finding",
@@ -31,4 +33,9 @@ __all__ = [
     "LLMClient",
     "AnthropicClient",
     "DISCLAIMER",
+    "Verifier",
+    "VerificationResult",
+    "GuidelineEngine",
+    "Recommendation",
+    "Urgency",
 ]

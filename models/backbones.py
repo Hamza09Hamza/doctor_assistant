@@ -6,6 +6,9 @@ deliberately narrow: `forward(x) -> feature_map` plus `out_channels`.
 
   - `TimmBackbone`         2D CNNs from `timm` with ImageNet weights.
   - `MonaiDenseNetBackbone` 2D or 3D DenseNet from MONAI (for CT/MRI volumes).
+  - `HFViTBackbone`        HuggingFace ViT encoders (RAD-DINO, BiomedCLIP-style) —
+                           medical *foundation* models, reshaped to a feature map so
+                           the existing pooling heads consume them unchanged.
 """
 
 from __future__ import annotations
@@ -89,6 +92,47 @@ class MonaiDenseNetBackbone(Backbone):
         return self.features(x)
 
 
+class HFViTBackbone(Backbone):
+    """A HuggingFace ViT encoder (e.g. RAD-DINO) exposed as a 2D feature map.
+
+    Medical foundation encoders such as `microsoft/rad-dino` (a DINOv2 ViT pre-trained
+    on chest radiographs) output a sequence of patch tokens, not a conv feature map. We
+    drop the CLS token and reshape the patch tokens back to a (B, C, h, w) grid, so the
+    existing `ClassificationHead` (which global-pools) and Grad-CAM (which taps a spatial
+    map) work without any change.
+
+    Image size must be a multiple of the model's patch size (14 for RAD-DINO). We pass
+    `interpolate_pos_encoding=True` so non-default sizes still work by interpolating the
+    positional embeddings — but a multiple of the patch size is required for the token
+    grid to be square and reshape cleanly (e.g. 518 = 37×14, or 294 = 21×14).
+    """
+
+    def __init__(self, model_id: str, in_channels: int = 3, pretrained: bool = True) -> None:
+        super().__init__()
+        from transformers import AutoModel
+
+        if pretrained:
+            self.net = AutoModel.from_pretrained(model_id)
+        else:
+            from transformers import AutoConfig
+            self.net = AutoModel.from_config(AutoConfig.from_pretrained(model_id))
+        self.spatial_dims = 2
+        self.out_channels = int(self.net.config.hidden_size)
+        self.patch_size = int(getattr(self.net.config, "patch_size", 14))
+        self._in_channels = in_channels
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, _, h, w = x.shape
+        out = self.net(pixel_values=x, interpolate_pos_encoding=True)
+        tokens = out.last_hidden_state          # (B, 1 + n_patches, C) — CLS first
+        gh, gw = h // self.patch_size, w // self.patch_size
+        patches = tokens[:, 1:, :]              # drop CLS
+        # Guard against models that emit register tokens: keep the trailing gh*gw.
+        patches = patches[:, patches.shape[1] - gh * gw:, :]
+        feat = patches.transpose(1, 2).reshape(b, self.out_channels, gh, gw)
+        return feat.contiguous()
+
+
 def build_backbone(
     name: str,
     spatial_dims: int = 2,
@@ -97,8 +141,10 @@ def build_backbone(
 ) -> Backbone:
     """Construct a backbone from a `prefix:variant` name.
 
-    Examples: "timm:resnet50", "timm:efficientnet_b0", "monai:densenet121".
-    timm backbones are 2D only; use a monai backbone for volumetric data.
+    Examples:
+      "timm:resnet50", "timm:densenet121"          ImageNet CNNs (2D only)
+      "monai:densenet121"                          2D/3D DenseNet for volumes
+      "hf:microsoft/rad-dino"                       medical foundation ViT (2D only)
     """
     if ":" not in name:
         raise ValueError(f"Backbone name must be 'prefix:variant', got {name!r}")
@@ -115,4 +161,8 @@ def build_backbone(
             in_channels=in_channels,
             pretrained=pretrained,
         )
-    raise ValueError(f"Unknown backbone prefix {prefix!r} (expected 'timm' or 'monai').")
+    if prefix == "hf":
+        if spatial_dims != 2:
+            raise ValueError("hf ViT backbones support 2D only.")
+        return HFViTBackbone(variant, in_channels=in_channels, pretrained=pretrained)
+    raise ValueError(f"Unknown backbone prefix {prefix!r} (expected 'timm', 'monai', or 'hf').")

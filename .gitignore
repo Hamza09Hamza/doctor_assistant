@@ -10,10 +10,13 @@ build/
 venv/
 env/
 .ipynb_checkpoints/
+*.ipynb
 *.egg/
 
 # Data & weights (never commit raw scans or trained models)
-data/
+data/*
+!data/*.py
+!data/__init__.py
 datasets/
 checkpoints/
 *.ckpt
