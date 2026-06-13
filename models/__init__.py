@@ -1,7 +1,7 @@
 """Model layer: shared backbones, task heads, and the multi-head BaseExpert."""
 
 from .backbones import Backbone, MonaiDenseNetBackbone, TimmBackbone, build_backbone
-from .experts import BaseExpert
+from .experts import BaseExpert, strip_orig_mod
 from .heads import ClassificationHead, ConfidenceHead, Head, SegmentationHead
 
 __all__ = [
@@ -14,4 +14,5 @@ __all__ = [
     "SegmentationHead",
     "ConfidenceHead",
     "BaseExpert",
+    "strip_orig_mod",
 ]

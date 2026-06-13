@@ -120,7 +120,8 @@ class Trainer:
         if not (self.config.resume and os.path.isfile(last)):
             return
         ckpt = torch.load(last, map_location=self.device)
-        self.model.load_state_dict(ckpt["model"])
+        from models.experts import strip_orig_mod
+        self.model.load_state_dict(strip_orig_mod(ckpt["model"]))
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.scaler.load_state_dict(ckpt["scaler"])
         self.best_metric = ckpt.get("best_metric", float("-inf"))

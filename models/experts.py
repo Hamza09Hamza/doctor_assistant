@@ -11,6 +11,13 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+
+def strip_orig_mod(state: dict) -> dict:
+    """Strip the _orig_mod. prefix that torch.compile adds to state-dict keys."""
+    if not any(k.startswith("_orig_mod.") for k in state):
+        return state
+    return {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+
 from core.enums import BodyPart, Modality, TaskType
 from core.types import HeadOutput, Prediction, Scan
 from .backbones import Backbone
