@@ -7,16 +7,16 @@ no invented measurements, no diagnosis. That keeps the prose auditable: every se
 maps back to a number, and the `StructuredReport` carries the source findings alongside
 the text so a reviewer can check the two against each other.
 
-The LLM path is the default (the system was specced LLM-driven). A deterministic
-template path is kept as a safety net for offline/no-key/failed-call situations, so the
-pipeline degrades to plain prose rather than crashing — it never silently drops to a
-worse mode without that being visible in `StructuredReport.generator`.
+All LLM inference runs **locally** — weights are downloaded once from HuggingFace and
+cached on disk; no API key, no external call at inference time. `LocalLLMClient` is the
+default. A deterministic template path is kept as a safety net for CPU-only / no-GPU
+situations, so the pipeline degrades gracefully rather than crashing — the fallback is
+always visible in `StructuredReport.generator`.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -78,56 +78,106 @@ class StructuredReport:
 
 @runtime_checkable
 class LLMClient(Protocol):
-    """Minimal completion interface so any provider can back the reporter."""
+    """Minimal completion interface — implement this to swap in any local model."""
 
     def complete(self, system: str, user: str) -> str: ...
 
 
-class AnthropicClient:
-    """Claude-backed completion. Lazy-imports `anthropic` and reads the API key from
-    the environment by default. A report-drafting *typist* task, so a fast model
-    (Sonnet) is the sensible default; override `model` for higher-stakes phrasing."""
+# Default local model: Phi-3 Mini (3.8B, ~2 GB in 4-bit).
+# Fits alongside the vision models on an L4 (24 GB VRAM).
+# Swap to a larger model by passing model_id to LocalLLMClient — e.g.:
+#   "mistralai/Mistral-7B-Instruct-v0.3"   (~14 GB fp16, ~4 GB 4-bit)
+#   "meta-llama/Meta-Llama-3.1-8B-Instruct" (~16 GB fp16, ~4 GB 4-bit)
+_DEFAULT_LOCAL_MODEL = "microsoft/Phi-3-mini-4k-instruct"
+
+
+class LocalLLMClient:
+    """Locally-running LLM via HuggingFace transformers — no API key, no network call
+    at inference time. Weights download once and are cached in ~/.cache/huggingface.
+
+    The model is loaded lazily on the first `complete()` call so importing this module
+    stays cheap. `load_in_4bit=True` (default) keeps VRAM usage low enough to coexist
+    with the vision models on an L4 GPU — Phi-3 Mini at 4-bit uses ~2 GB VRAM.
+
+    Prompt format: a `[INST] system \\n user [/INST]` template that works for
+    Phi-3 / Mistral / LLaMA instruct models. The model is instructed to output only
+    a JSON object (the same contract the Anthropic path used).
+    """
 
     def __init__(
         self,
-        model: str = "claude-sonnet-4-6",
-        api_key: str | None = None,
-        max_tokens: int = 1024,
-        temperature: float = 0.0,  # deterministic phrasing; facts are fixed
+        model_id: str = _DEFAULT_LOCAL_MODEL,
+        max_new_tokens: int = 512,
+        load_in_4bit: bool = True,
+        device: str | None = None,
     ) -> None:
-        self.model = model
-        self.max_tokens = max_tokens
-        self.temperature = temperature
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        self._client = None  # created on first use
+        self.model_id = model_id
+        self.max_new_tokens = max_new_tokens
+        self.load_in_4bit = load_in_4bit
+        self.device = device
+        self._pipe = None   # lazy-loaded
+
+    def _ensure_loaded(self) -> None:
+        if self._pipe is not None:
+            return
+        import torch
+        from transformers import pipeline, BitsAndBytesConfig
+
+        quant = None
+        if self.load_in_4bit:
+            quant = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+
+        device_map = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self._pipe = pipeline(
+            "text-generation",
+            model=self.model_id,
+            model_kwargs={"quantization_config": quant} if quant else {},
+            device_map=device_map,
+            trust_remote_code=True,
+        )
+        self._pipe.tokenizer.padding_side = "left"
 
     def complete(self, system: str, user: str) -> str:
-        if self._client is None:
-            import anthropic  # lazy: keep import cost off the critical path
-
-            self._client = anthropic.Anthropic(api_key=self._api_key)
-        resp = self._client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            temperature=self.temperature,
-            system=system,
-            messages=[{"role": "user", "content": user}],
+        self._ensure_loaded()
+        # Chat-template format supported by Phi-3, Mistral, and LLaMA instruct variants.
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user},
+        ]
+        out = self._pipe(
+            messages,
+            max_new_tokens=self.max_new_tokens,
+            do_sample=False,       # greedy — deterministic phrasing
+            return_full_text=False,
         )
-        return "".join(block.text for block in resp.content if block.type == "text")
+        # transformers returns list[dict]; extract the assistant turn
+        generated = out[0]["generated_text"]
+        if isinstance(generated, list):
+            # chat format: last message is assistant turn
+            return str(generated[-1].get("content", ""))
+        return str(generated)
 
 
 class Reporter:
     """Build a `StructuredReport` from structured findings.
 
-    Pass an `LLMClient` to use the language-model path (default behaviour: it
-    auto-creates an `AnthropicClient` if a key is present). With no client and no key,
-    or if the model call/parse fails, it falls back to the deterministic template and
-    records that in `StructuredReport.generator`.
+    Default: auto-creates a `LocalLLMClient` (Phi-3 Mini, 4-bit) when a GPU is
+    available. Pass `auto_llm=False` or an explicit `llm=None` to force the
+    deterministic template. If the model call or JSON parse fails for any reason,
+    it falls back to the template and records that in `StructuredReport.generator`.
     """
 
     def __init__(self, llm: LLMClient | None = None, *, auto_llm: bool = True) -> None:
-        if llm is None and auto_llm and os.environ.get("ANTHROPIC_API_KEY"):
-            llm = AnthropicClient()
+        if llm is None and auto_llm:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    llm = LocalLLMClient()
+            except Exception:  # noqa: BLE001
+                pass  # no GPU or transformers not installed → template fallback
         self.llm = llm
 
     def report(
@@ -172,8 +222,7 @@ class Reporter:
             impression=str(data.get("impression", "")).strip(),
             recommendation=str(data.get("recommendation", "")).strip(),
             source_findings=list(findings),
-            generator=f"anthropic:{model_name}" if isinstance(self.llm, AnthropicClient)
-            else f"llm:{model_name}",
+            generator=f"local:{model_name}",
             meta=meta,
         )
 

@@ -15,8 +15,8 @@ from .findings import (
 from .guidelines import GuidelineEngine, Recommendation, Urgency
 from .reporter import (
     DISCLAIMER,
-    AnthropicClient,
     LLMClient,
+    LocalLLMClient,
     Reporter,
     StructuredReport,
 )
@@ -31,7 +31,7 @@ __all__ = [
     "Reporter",
     "StructuredReport",
     "LLMClient",
-    "AnthropicClient",
+    "LocalLLMClient",
     "DISCLAIMER",
     "Verifier",
     "VerificationResult",
