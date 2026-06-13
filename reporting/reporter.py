@@ -62,7 +62,7 @@ class StructuredReport:
     recommendation: str = ""
     disclaimer: str = DISCLAIMER
     source_findings: list[Finding] = field(default_factory=list)  # audit trail
-    generator: str = ""  # "anthropic:claude-...", "template", "template (llm-fallback)"
+    generator: str = ""  # "local:Phi-3-mini-...", "template", "template (llm-fallback)"
     meta: ScanMetadata | None = None
 
     def to_text(self) -> str:
