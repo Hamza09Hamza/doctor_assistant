@@ -6,9 +6,11 @@ deliberately narrow: `forward(x) -> feature_map` plus `out_channels`.
 
   - `TimmBackbone`         2D CNNs from `timm` with ImageNet weights.
   - `MonaiDenseNetBackbone` 2D or 3D DenseNet from MONAI (for CT/MRI volumes).
-  - `HFViTBackbone`        HuggingFace ViT encoders (RAD-DINO, BiomedCLIP-style) —
-                           medical *foundation* models, reshaped to a feature map so
-                           the existing pooling heads consume them unchanged.
+  - `HFViTBackbone`        HuggingFace ViT encoders (RAD-DINO) — medical *foundation*
+                           models, reshaped to a feature map so the existing pooling
+                           heads consume them unchanged.
+  - `BiomedCLIPBackbone`   BiomedCLIP's vision tower (ViT-B/16 pre-trained on 15M
+                           biomedical image-text pairs), loaded via `open_clip`.
 """
 
 from __future__ import annotations
@@ -133,6 +135,67 @@ class HFViTBackbone(Backbone):
         return feat.contiguous()
 
 
+class BiomedCLIPBackbone(Backbone):
+    """BiomedCLIP's vision tower exposed as a 2D feature map.
+
+    BiomedCLIP (`microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224`) is one of the
+    most-used radiology encoders: a ViT-B/16 contrastively pre-trained on ~15M biomedical
+    image-text pairs. It ships in `open_clip` format, *not* as a plain HF `AutoModel`, so
+    we load it through open_clip and keep its visual `trunk` — a `timm` ViT. We take the
+    patch tokens from `forward_features`, drop the prefix (CLS/register) tokens, and
+    reshape to (B, C, h, w), so the existing `ClassificationHead` (global-pool) and
+    Grad-CAM (spatial tap) work unchanged.
+
+    The common recipe is to *freeze* this trunk and train only the task head — a few
+    minutes on a GPU, and it lifts chest-X-ray AUC well above a from-scratch CNN. Native
+    input is 224×224 (a 14×14 patch grid); pass `image_size=224` when building the expert.
+    """
+
+    DEFAULT_ID = "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+    def __init__(
+        self, model_id: str | None = None, in_channels: int = 3, pretrained: bool = True
+    ) -> None:
+        super().__init__()
+        import open_clip
+
+        model_id = model_id or self.DEFAULT_ID
+        hub = model_id if model_id.startswith("hf-hub:") else f"hf-hub:{model_id}"
+        if pretrained:
+            model, _ = open_clip.create_model_from_pretrained(hub)
+        else:  # arch only (still reads the hub config); used for wiring tests
+            model = open_clip.create_model(hub, pretrained=None)
+
+        trunk = getattr(getattr(model, "visual", None), "trunk", None)
+        if trunk is None:
+            raise ValueError(
+                "Expected an open_clip TimmModel visual tower with a `.trunk` "
+                f"(got {type(getattr(model, 'visual', None)).__name__}). "
+                "BiomedCLIPBackbone supports timm-backed open_clip vision towers."
+            )
+        self.trunk = trunk
+        self.spatial_dims = 2
+        self.num_prefix = int(getattr(trunk, "num_prefix_tokens", 1))
+        self.out_channels = int(getattr(trunk, "num_features"))
+        self.patch_size = self._infer_patch_size(trunk)
+        self._in_channels = in_channels
+
+    @staticmethod
+    def _infer_patch_size(trunk) -> int:
+        pe = getattr(trunk, "patch_embed", None)
+        ps = getattr(pe, "patch_size", (16, 16)) if pe is not None else (16, 16)
+        return int(ps[0] if isinstance(ps, (tuple, list)) else ps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, _, h, w = x.shape
+        tokens = self.trunk.forward_features(x)  # (B, N, C), prefix tokens first
+        patches = tokens[:, self.num_prefix:, :]
+        gh, gw = h // self.patch_size, w // self.patch_size
+        # keep the trailing gh*gw in case the model emits extra register tokens
+        patches = patches[:, patches.shape[1] - gh * gw:, :]
+        return patches.transpose(1, 2).reshape(b, self.out_channels, gh, gw).contiguous()
+
+
 def build_backbone(
     name: str,
     spatial_dims: int = 2,
@@ -145,6 +208,8 @@ def build_backbone(
       "timm:resnet50", "timm:densenet121"          ImageNet CNNs (2D only)
       "monai:densenet121"                          2D/3D DenseNet for volumes
       "hf:microsoft/rad-dino"                       medical foundation ViT (2D only)
+      "biomedclip:"                                 BiomedCLIP ViT-B/16 (2D, default id)
+      "biomedclip:hf-hub:org/model"                 a specific open_clip BiomedCLIP id
     """
     if ":" not in name:
         raise ValueError(f"Backbone name must be 'prefix:variant', got {name!r}")
@@ -165,4 +230,10 @@ def build_backbone(
         if spatial_dims != 2:
             raise ValueError("hf ViT backbones support 2D only.")
         return HFViTBackbone(variant, in_channels=in_channels, pretrained=pretrained)
-    raise ValueError(f"Unknown backbone prefix {prefix!r} (expected 'timm', 'monai', or 'hf').")
+    if prefix == "biomedclip":
+        if spatial_dims != 2:
+            raise ValueError("biomedclip backbones support 2D only.")
+        return BiomedCLIPBackbone(variant or None, in_channels=in_channels, pretrained=pretrained)
+    raise ValueError(
+        f"Unknown backbone prefix {prefix!r} (expected 'timm', 'monai', 'hf', or 'biomedclip')."
+    )

@@ -120,9 +120,17 @@ class Pipeline:
     ) -> list[Finding]:
         """Pick the extraction path by what the expert produced.
 
-        A segmentation mask gives measured geometry (brain MRI); otherwise class scores
-        give thresholded findings with optional Grad-CAM localization (chest X-ray).
+        An expert may own its findings extraction by exposing
+        `findings_from_prediction(scan, prediction) -> list[Finding]` — used when the
+        model's output is richer than the generic decoders (TotalSegmentator's many
+        organ masks, MAIRA-2's grounded sentences). Otherwise: a segmentation mask gives
+        measured geometry (brain MRI), and class scores give thresholded findings with
+        optional Grad-CAM localization (chest X-ray).
         """
+        provider = getattr(expert, "findings_from_prediction", None)
+        if callable(provider):
+            return list(provider(scan, pred))
+
         if pred.segmentation is not None:
             label = pred.top_label or getattr(expert, "body_part", "lesion")
             label = label.value if hasattr(label, "value") else str(label)

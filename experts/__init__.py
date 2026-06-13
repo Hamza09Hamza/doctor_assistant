@@ -1,10 +1,56 @@
-"""Expert packs — specialized (modality, body-part) models, each a `BaseExpert`.
+"""Expert packs — specialized (modality, body-part) models behind one `predict` contract.
 
-One pack per clinical domain (ChestXray, NeuroMRI, BoneXray, ...). They share the same
-backbone/head machinery and the same `Prediction` contract, so the router and reporter
-treat every pack uniformly. Start narrow (one strong pack), unify into a platform later.
+Two kinds live here now:
+
+  * **Trained packs** — a shared backbone + task heads we train ourselves (`ChestXray`).
+  * **Pretrained adapters** — strong open models wrapped to the same contract with no
+    training: `TotalSegmentatorExpert` (CT organ segmentation) and `Maira2Expert`
+    (grounded chest-X-ray reporting). They plug into the router/orchestrator unchanged.
+
+`build_default_registry` assembles a registry from whichever experts you ask for, so the
+pipeline can be stood up in one call.
 """
 
-from .chest_xray import CHESTXRAY14_LABELS, build_chest_xray_expert
+from core.enums import BodyPart, Modality
+from routing import ExpertRegistry
 
-__all__ = ["build_chest_xray_expert", "CHESTXRAY14_LABELS"]
+from .chest_xray import CHESTXRAY14_LABELS, build_chest_xray_expert
+from .ct_totalsegmentator import TotalSegmentatorExpert
+from .maira2 import Maira2Expert
+
+__all__ = [
+    "build_chest_xray_expert",
+    "CHESTXRAY14_LABELS",
+    "TotalSegmentatorExpert",
+    "Maira2Expert",
+    "build_default_registry",
+]
+
+
+def build_default_registry(
+    *,
+    chest_expert=None,
+    include_maira2: bool = False,
+    include_ct: bool = False,
+    ct_kwargs: dict | None = None,
+) -> ExpertRegistry:
+    """Assemble an `ExpertRegistry` from the experts you want active.
+
+    `chest_expert` is your trained (or freshly built) chest-X-ray `BaseExpert`. Set
+    `include_maira2` to also register MAIRA-2 under (XRAY, CHEST) — both then run and
+    their findings pool. `include_ct` registers one TotalSegmentator instance under both
+    CT niches (chest and abdomen) via `register_niche`, since one set of weights serves
+    both. Heavy adapters are constructed only when requested.
+    """
+    registry = ExpertRegistry()
+
+    if chest_expert is not None:
+        registry.register(chest_expert)
+    if include_maira2:
+        registry.register(Maira2Expert())
+    if include_ct:
+        ct = TotalSegmentatorExpert(**(ct_kwargs or {}))
+        registry.register_niche(Modality.CT, BodyPart.CHEST, ct)
+        registry.register_niche(Modality.CT, BodyPart.ABDOMEN, ct)
+
+    return registry

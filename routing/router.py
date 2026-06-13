@@ -29,9 +29,19 @@ class ExpertRegistry:
         self._by_niche: dict[tuple[Modality, BodyPart], list[ExpertModel]] = {}
 
     def register(self, expert: ExpertModel) -> ExpertModel:
-        """Add an expert under its (modality, body_part) key. Returns it for chaining."""
-        key = (expert.modality, expert.body_part)
-        self._by_niche.setdefault(key, []).append(expert)
+        """Add an expert under its own advertised (modality, body_part). Returns it."""
+        return self.register_niche(expert.modality, expert.body_part, expert)
+
+    def register_niche(
+        self, modality: Modality, body_part: BodyPart, expert: ExpertModel
+    ) -> ExpertModel:
+        """Add an expert under an *explicit* niche, regardless of what it advertises.
+
+        Pretrained models often span several niches — TotalSegmentator reads chest *and*
+        abdominal CT from one set of weights. Registering the same instance under each
+        niche lets the router reach it without cloning the model. Returns it for chaining.
+        """
+        self._by_niche.setdefault((modality, body_part), []).append(expert)
         return expert
 
     def experts(self) -> list[ExpertModel]:
