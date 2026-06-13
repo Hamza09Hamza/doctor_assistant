@@ -17,6 +17,7 @@ always visible in `StructuredReport.generator`.
 from __future__ import annotations
 
 import json
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
@@ -179,6 +180,7 @@ class Reporter:
             except Exception:  # noqa: BLE001
                 pass  # no GPU or transformers not installed → template fallback
         self.llm = llm
+        self._warned = False  # one-shot guard for the fallback warning
 
     def report(
         self, findings: Sequence[Finding], meta: ScanMetadata | None = None
@@ -187,11 +189,26 @@ class Reporter:
         if self.llm is not None:
             try:
                 return self._llm_report(facts, findings, meta)
-            except Exception:  # noqa: BLE001 - never let drafting crash the pipeline
+            except Exception as exc:  # noqa: BLE001 - never let drafting crash the pipeline
+                self._warn_fallback(exc)
                 rep = _template_report(findings, meta)
                 rep.generator = "template (llm-fallback)"
                 return rep
         return _template_report(findings, meta)
+
+    def _warn_fallback(self, exc: Exception) -> None:
+        """Surface *why* the LLM path failed — once — so a silent template
+        fallback isn't mistaken for a working local model."""
+        if self._warned:
+            return
+        self._warned = True
+        warnings.warn(
+            f"Reporter: local LLM unavailable ({type(exc).__name__}: {exc}). "
+            "Falling back to the deterministic template. To enable local LLM "
+            "drafting, install `transformers accelerate bitsandbytes`.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     def _build_facts(
         self, findings: Sequence[Finding], meta: ScanMetadata | None
