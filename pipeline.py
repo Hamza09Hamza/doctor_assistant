@@ -13,6 +13,7 @@ conventional next step. No stage invents facts another stage didn't supply.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 from core.interfaces import ExpertModel, Router
@@ -100,10 +101,26 @@ class Pipeline:
 
         all_findings: list[Finding] = []
         for expert in experts:
-            pred = expert.predict(scan)
+            # One reader failing must not sink the others. A pretrained adapter can be
+            # unavailable for reasons unrelated to the rest of the panel — a gated/
+            # un-authenticated HF repo (MAIRA-2), an OOM, a network drop. Warn with the
+            # expert name + error and carry on; the remaining experts still produce a
+            # report. A failed expert is NOT recorded in result.experts/predictions, so
+            # the summary reflects only what actually ran.
+            try:
+                pred = expert.predict(scan)
+                findings = self._findings_for(expert, pred, scan)
+            except Exception as exc:  # noqa: BLE001 — deliberately broad; isolate the expert
+                warnings.warn(
+                    f"Pipeline: expert {expert.name!r} failed and was skipped "
+                    f"({type(exc).__name__}: {exc}).",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
             result.experts.append(expert.name)
             result.predictions.append(pred)
-            all_findings.extend(self._findings_for(expert, pred, scan))
+            all_findings.extend(findings)
 
         # Salience order: present first, then by probability.
         all_findings.sort(key=lambda f: (f.present, f.probability), reverse=True)
