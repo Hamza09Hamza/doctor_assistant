@@ -94,19 +94,35 @@ class TorchXRayVisionExpert:
 
     def predict(self, scan: Scan) -> Prediction:
         import torch
+        import torchxrayvision as xrv
 
         self._ensure_loaded()
         x = self._preprocess(scan.data)
         with torch.no_grad():
-            out = self._model(x)[0].detach().float().cpu()
-        # xrv applies the sigmoid in its forward; guard against a weights variant that doesn't.
-        if float(out.min()) < 0.0 or float(out.max()) > 1.0:
-            out = torch.sigmoid(out)
+            raw = self._model(x).detach().float().cpu()  # (1, n_path), sigmoid probs
+        # xrv applies the sigmoid in its forward; guard a weights variant that doesn't.
+        if float(raw.min()) < 0.0 or float(raw.max()) > 1.0:
+            raw = torch.sigmoid(raw)
 
-        by_path = {p: float(v) for p, v in zip(self._model.pathologies, out) if p}
+        # RAW xrv scores are NOT comparable across pathologies — each has its own operating
+        # point (model.op_threshs), so a flat threshold over-calls wildly (a normal study
+        # lights up because everything clusters near 0.5). op_norm remaps each score through
+        # its operating point so 0.5 == the calibrated decision boundary; then one pipeline
+        # threshold is meaningful and normals stay quiet while true findings still cross.
+        op = getattr(self._model, "op_threshs", None)
+        if op is not None:
+            op = op.detach().float().cpu()
+            scores = xrv.models.op_norm(raw, op)[0]
+            # Pathologies xrv never calibrated come back as a neutral 0.5; don't let that
+            # trip the threshold — treat "uncalibrated" as "not reported".
+            scores = torch.where(torch.isnan(op), torch.zeros_like(scores), scores)
+        else:
+            scores = raw[0]
+
+        by_path = {p: float(v) for p, v in zip(self._model.pathologies, scores) if p}
 
         pred = Prediction(expert=self.name, meta=scan.meta)
         pred.class_probs = {lbl: by_path[lbl] for lbl in self.class_names if lbl in by_path}
-        # Highest score doubles as a coarse study-level confidence (already calibrated [0,1]).
+        # Highest calibrated score doubles as a coarse study-level confidence.
         pred.confidence = max(pred.class_probs.values()) if pred.class_probs else None
         return pred
