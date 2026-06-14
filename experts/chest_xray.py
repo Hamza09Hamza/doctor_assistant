@@ -22,10 +22,18 @@ from models.heads import ClassificationHead, ConfidenceHead
 from preprocessing.transforms import PreprocessConfig, build_preprocess
 
 # NIH ChestX-ray14 label set — the common benchmark. Swap for CheXpert's 13 if needed.
+#
+# ORDER IS LOAD-BEARING: a classification head's logit index i means "class_names[i]",
+# so this tuple MUST list the labels in the exact order the head was trained against.
+# Training builds its multi-hot targets from `data.chest_xray14.CHESTXRAY14_LABELS`
+# (alphabetical), so this list is kept byte-for-byte identical to it. Reordering here
+# without retraining silently mislabels every finding (logit for "Consolidation" gets
+# read out as "Effusion", etc.). The trained checkpoint also stores its own
+# `class_names`; prefer those when loading weights (see BaseExpert / the system test).
 CHESTXRAY14_LABELS: tuple[str, ...] = (
-    "Atelectasis", "Cardiomegaly", "Effusion", "Infiltration", "Mass", "Nodule",
-    "Pneumonia", "Pneumothorax", "Consolidation", "Edema", "Emphysema",
-    "Fibrosis", "Pleural_Thickening", "Hernia",
+    "Atelectasis", "Cardiomegaly", "Consolidation", "Edema", "Effusion",
+    "Emphysema", "Fibrosis", "Hernia", "Infiltration", "Mass",
+    "Nodule", "Pleural_Thickening", "Pneumonia", "Pneumothorax",
 )
 
 

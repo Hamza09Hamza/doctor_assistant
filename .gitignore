@@ -31,6 +31,9 @@ checkpoints/
 *.nii
 *.nii.gz
 
+# Fetched test samples (downloaded on demand by scripts/fetch_samples.py)
+samples/
+
 # Logs / outputs
 runs/
 logs/
