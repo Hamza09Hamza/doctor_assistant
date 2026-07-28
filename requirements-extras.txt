@@ -1,0 +1,23 @@
+# Optional expert adapters, local reporting, and real-data evaluation.
+#
+# Install after requirements.txt for the chest/MSK research environment:
+#   pip install -r requirements.txt -r requirements-extras.txt
+#
+# TotalSegmentator is deliberately excluded: its nnU-Net/scientific-Python pins can
+# conflict with this environment. Use a separate environment as documented in
+# docs/DEVELOPMENT.md.
+
+torchxrayvision
+ultralytics
+datasets>=2.18
+huggingface_hub>=0.23
+
+transformers>=4.46
+accelerate
+bitsandbytes
+protobuf
+sentencepiece
+
+open_clip_torch
+matplotlib
+pandas

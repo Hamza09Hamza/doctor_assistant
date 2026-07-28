@@ -8,6 +8,13 @@ extractors, and renders a report through the deterministic path. Run from repo r
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 import numpy as np
 import torch
 from torch import nn
@@ -93,7 +100,8 @@ def demo_chest() -> None:
 
 
 def demo_brain_mask() -> None:
-    print("\n=== BRAIN MRI: mask geometry -> measured findings ===")
+    print("\n=== MASK GEOMETRY ONLY: synthetic brain mask -> measured findings ===")
+    print("(This exercises reporting geometry; no brain-MRI expert exists in this repo.)")
     # Synthetic 3D mask (D,H,W): a blob on the left half.
     mask = np.zeros((40, 64, 64), dtype=np.int64)
     mask[15:25, 20:40, 8:28] = 1  # ~10 x 20 x 20 voxels

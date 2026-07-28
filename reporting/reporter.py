@@ -90,6 +90,7 @@ class LLMClient(Protocol):
 #   "mistralai/Mistral-7B-Instruct-v0.3"   (~14 GB fp16, ~4 GB 4-bit)
 #   "meta-llama/Meta-Llama-3.1-8B-Instruct" (~16 GB fp16, ~4 GB 4-bit)
 _DEFAULT_LOCAL_MODEL = "microsoft/Phi-3-mini-4k-instruct"
+_AUTO_LLM = object()
 
 
 class LocalLLMClient:
@@ -171,21 +172,33 @@ class Reporter:
     it falls back to the template and records that in `StructuredReport.generator`.
     """
 
-    def __init__(self, llm: LLMClient | None = None, *, auto_llm: bool = True) -> None:
-        if llm is None and auto_llm:
+    def __init__(
+        self,
+        llm: LLMClient | None | object = _AUTO_LLM,
+        *,
+        auto_llm: bool = True,
+    ) -> None:
+        # The sentinel distinguishes Reporter() (automatic local model on a GPU) from
+        # Reporter(llm=None) (explicit deterministic mode), matching the public docs.
+        if llm is _AUTO_LLM and auto_llm:
             try:
                 import torch
                 if torch.cuda.is_available():
                     llm = LocalLLMClient()
             except Exception:  # noqa: BLE001
                 pass  # no GPU or transformers not installed → template fallback
-        self.llm = llm
+        self.llm = None if llm is _AUTO_LLM else llm
         self._warned = False  # one-shot guard for the fallback warning
 
     def report(
         self, findings: Sequence[Finding], meta: ScanMetadata | None = None
     ) -> StructuredReport:
         facts = self._build_facts(findings, meta)
+        # A no-positive study needs no generative wording. Keeping this path
+        # deterministic removes the highest-risk hallucination case: an LLM inventing
+        # pathology when the upstream readers supplied no positive evidence.
+        if not any(f.present for f in findings):
+            return _template_report(findings, meta)
         if self.llm is not None:
             try:
                 return self._llm_report(facts, findings, meta)
@@ -232,7 +245,11 @@ class Reporter:
         assert self.llm is not None
         raw = self.llm.complete(_SYSTEM_PROMPT, json.dumps(facts, ensure_ascii=False))
         data = _parse_json(raw)
-        model_name = getattr(self.llm, "model", type(self.llm).__name__)
+        model_name = getattr(
+            self.llm,
+            "model_id",
+            getattr(self.llm, "model", type(self.llm).__name__),
+        )
         return StructuredReport(
             technique=str(data.get("technique", "")).strip(),
             findings=str(data.get("findings", "")).strip(),
@@ -263,7 +280,12 @@ def _phrase_finding(f: Finding) -> str:
         parts.append(f"{f.count} foci of")
     if f.laterality:
         parts.append(f.laterality)
-    parts.append(f.label.lower() if f.label[:1].isupper() and " " in f.label else f.label)
+    display_label = f.label.replace("_", " ")
+    parts.append(
+        display_label.lower()
+        if display_label[:1].isupper() and " " in display_label
+        else display_label
+    )
     if f.location:
         parts.append(f"in the {f.location}")
     detail: list[str] = []
@@ -302,7 +324,7 @@ def _template_report(
 
     findings_text = " ".join(_phrase_finding(f) for f in present)
     top = present[0]
-    impression = f"Findings most consistent with {top.label.lower()}."
+    impression = f"Findings most consistent with {top.label.replace('_', ' ').lower()}."
     return StructuredReport(
         technique=technique,
         findings=findings_text,

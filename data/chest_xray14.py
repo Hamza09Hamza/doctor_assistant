@@ -53,16 +53,18 @@ def load_chest_xray14(
     seed: int = 42,
     max_samples: int | None = None,  # cap for quick smoke-runs
     stratify: bool = True,
+    group_by_patient: bool = True,
 ) -> list[Sample]:
     """Return `Sample` objects for the requested split.
 
     The NIH dataset only ships train_val_list.txt and test_list.txt; there is no
     dedicated validation file. `stratify=True` (default) uses iterative
     stratification (Sechidis et al., 2011) to build train/val so each of the 14
-    labels keeps its overall positive rate in both folds — a plain random split can
-    otherwise starve val of a rare label like Hernia (~0.2% prevalence) by chance,
-    making its val-set AUC meaningless. Pass `stratify=False` for the old
-    hash-of-names random split.
+    labels keeps its overall positive rate in both folds. `group_by_patient=True`
+    (default) assigns every image sharing the NIH filename patient prefix to the same
+    fold, preventing patient leakage. Pass `stratify=False` for a grouped random split,
+    or `group_by_patient=False` only for a dataset whose filenames do not carry patient
+    identity.
     """
     label_index = {l: i for i, l in enumerate(labels)}
     csv_path = os.path.join(root, "Data_Entry_2017.csv")
@@ -71,6 +73,15 @@ def load_chest_xray14(
 
     rows = _read_rows(csv_path)  # Image Index -> raw "Finding Labels" string, read once
     train_val_names, test_names = _load_split_files(root)
+    test_names &= set(rows)
+    if not train_val_names:
+        # Some mirrors omit NIH's official split text files. Preserve the documented
+        # fallback by treating CSV rows not explicitly assigned to test as
+        # train+validation data. Never invent a test partition.
+        train_val_names = set(rows) - test_names
+    else:
+        # Ignore stale split entries that have no matching CSV row.
+        train_val_names &= set(rows)
 
     if split in ("train", "val"):
         if stratify:
@@ -79,11 +90,20 @@ def load_chest_xray14(
                 for name, finding_str in rows.items()
                 if name in train_val_names
             }
-            val_set = _stratified_val_split(train_val_names, label_vecs, len(labels), val_fraction, seed)
+            val_set = _stratified_val_split(
+                train_val_names,
+                label_vecs,
+                len(labels),
+                val_fraction,
+                seed,
+                group_by_patient=group_by_patient,
+            )
         else:
-            rng = random.Random(seed)
-            val_set = set(
-                rng.sample(sorted(train_val_names), int(len(train_val_names) * val_fraction))
+            val_set = _random_val_split(
+                train_val_names,
+                val_fraction,
+                seed,
+                group_by_patient=group_by_patient,
             )
         allowed = val_set if split == "val" else (train_val_names - val_set)
     elif split == "test":
@@ -149,40 +169,49 @@ def _stratified_val_split(
     n_labels: int,
     val_fraction: float,
     seed: int,
+    *,
+    group_by_patient: bool = True,
 ) -> set[str]:
     """Iterative stratification (Sechidis, Tsoumakas & Vlahavas, 2011), specialized to a
     2-way train/val split.
 
-    Repeatedly picks the rarest label that still has unassigned positive examples, and
-    sends each of those examples to whichever fold is furthest below its target share
-    for that label — this is what keeps a rare label's val-set prevalence close to its
-    overall prevalence instead of leaving it to chance. "No Finding" samples (an
-    all-zero label vector) carry no stratification signal, so they're distributed last,
-    by plain proportional random split, purely to hit the requested fold sizes.
+    The assignment unit is a patient group by default, not an image. Repeatedly picks
+    the rarest label that still has unassigned positive groups, and sends each group to
+    whichever fold is furthest below its target share for that label. Group label counts
+    retain the number of positive images, so balancing remains image-prevalence-aware.
+    All-zero groups are distributed last to approach the requested fold sizes.
     """
     names = sorted(train_val_names)
     rng = random.Random(seed)
     rng.shuffle(names)
 
-    positive_names = [nm for nm in names if sum(label_vecs[nm]) > 0]
-    no_finding_names = [nm for nm in names if sum(label_vecs[nm]) == 0]
+    groups = _group_names(names, group_by_patient)
+    group_labels = {
+        group: [
+            sum(label_vecs[name][i] for name in members)
+            for i in range(n_labels)
+        ]
+        for group, members in groups.items()
+    }
+    positive_groups = [group for group, vec in group_labels.items() if sum(vec) > 0]
+    no_finding_groups = [group for group, vec in group_labels.items() if sum(vec) == 0]
 
     remaining_size = {"val": val_fraction * len(names), "train": (1.0 - val_fraction) * len(names)}
     remaining_label_count = {
         fold: [
-            frac * sum(label_vecs[nm][i] for nm in positive_names)
+            frac * sum(group_labels[group][i] for group in positive_groups)
             for i in range(n_labels)
         ]
         for fold, frac in (("val", val_fraction), ("train", 1.0 - val_fraction))
     }
 
     assigned: dict[str, str] = {}
-    unassigned = set(positive_names)
+    unassigned = set(positive_groups)
 
     while unassigned:
         counts_left = [0] * n_labels
-        for nm in unassigned:
-            vec = label_vecs[nm]
+        for group in unassigned:
+            vec = group_labels[group]
             for i in range(n_labels):
                 if vec[i] > 0:
                     counts_left[i] += 1
@@ -191,28 +220,73 @@ def _stratified_val_split(
             break  # remaining unassigned samples carry only labels outside `labels`
         target_label = min(candidate_labels, key=lambda i: counts_left[i])
 
-        examples = [nm for nm in unassigned if label_vecs[nm][target_label] > 0]
+        examples = [
+            group for group in unassigned
+            if group_labels[group][target_label] > 0
+        ]
         rng.shuffle(examples)
-        for nm in examples:
+        for group in examples:
             fold = max(
                 ("val", "train"),
                 key=lambda f: (remaining_label_count[f][target_label], remaining_size[f], rng.random()),
             )
-            assigned[nm] = fold
-            unassigned.discard(nm)
-            vec = label_vecs[nm]
+            assigned[group] = fold
+            unassigned.discard(group)
+            vec = group_labels[group]
             for i in range(n_labels):
                 if vec[i] > 0:
-                    remaining_label_count[fold][i] -= 1
-            remaining_size[fold] -= 1
+                    remaining_label_count[fold][i] -= vec[i]
+            remaining_size[fold] -= len(groups[group])
 
-    rng.shuffle(no_finding_names)
-    for nm in no_finding_names:
+    rng.shuffle(no_finding_groups)
+    for group in no_finding_groups:
         fold = "val" if remaining_size["val"] >= remaining_size["train"] else "train"
-        assigned[nm] = fold
-        remaining_size[fold] -= 1
+        assigned[group] = fold
+        remaining_size[fold] -= len(groups[group])
 
-    return {nm for nm, fold in assigned.items() if fold == "val"}
+    return {
+        name
+        for group, fold in assigned.items()
+        if fold == "val"
+        for name in groups[group]
+    }
+
+
+def _random_val_split(
+    names: set[str],
+    val_fraction: float,
+    seed: int,
+    *,
+    group_by_patient: bool,
+) -> set[str]:
+    """Grouped random split used when iterative stratification is disabled."""
+    groups = _group_names(sorted(names), group_by_patient)
+    group_ids = list(groups)
+    random.Random(seed).shuffle(group_ids)
+    target = val_fraction * len(names)
+    chosen: list[str] = []
+    size = 0
+    for group in group_ids:
+        if size >= target:
+            break
+        chosen.append(group)
+        size += len(groups[group])
+    return {name for group in chosen for name in groups[group]}
+
+
+def _group_names(
+    names: list[str], group_by_patient: bool
+) -> dict[str, list[str]]:
+    """Group NIH filenames (`00000001_000.png`) by their patient prefix."""
+    groups: dict[str, list[str]] = {}
+    for name in names:
+        group = _patient_id(name) if group_by_patient else name
+        groups.setdefault(group, []).append(name)
+    return groups
+
+
+def _patient_id(name: str) -> str:
+    return os.path.basename(name).split("_", 1)[0]
 
 
 def _check_paths(csv_path: str, image_dir: str) -> None:
@@ -235,9 +309,6 @@ def _load_split_files(root: str) -> tuple[set[str], set[str]]:
 
     train_val = _read("train_val_list.txt")
     test = _read("test_list.txt")
-    if not train_val and not test:
-        # fall back: treat all images in CSV as train (no split file present)
-        return set(), set()
     return train_val, test
 
 

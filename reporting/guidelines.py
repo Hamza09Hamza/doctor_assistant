@@ -145,8 +145,15 @@ class GuidelineEngine:
     def recommend(self, findings: Sequence[Finding]) -> list[Recommendation]:
         present = [f for f in findings if f.present]
         recs: list[Recommendation] = []
+        seen: set[str] = set()
         for f in present:
             key = f.label.strip().lower()
+            # Several independent readers may produce the same canonical finding.
+            # Preserve all evidence in AnalysisResult.findings, but do not repeat the
+            # same action recommendation for every reader.
+            if key in seen:
+                continue
+            seen.add(key)
             if key == "nodule":
                 recs.append(_nodule_recommendation(f))
                 continue

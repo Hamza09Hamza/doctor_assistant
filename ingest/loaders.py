@@ -28,6 +28,18 @@ def _has_ext(path: str, exts: tuple[str, ...]) -> bool:
     return any(lower.endswith(e) for e in exts)
 
 
+def _spacing_from_affine(
+    affine: torch.Tensor, spatial_dims: int
+) -> tuple[float, ...]:
+    """Physical voxel sizes from the norms of an affine's spatial basis vectors."""
+    matrix = torch.as_tensor(affine, dtype=torch.float64)
+    n_spatial = min(spatial_dims, 3, matrix.shape[1] - 1)
+    return tuple(
+        float(torch.linalg.vector_norm(matrix[:3, i]))
+        for i in range(n_spatial)
+    )
+
+
 class Image2DLoader:
     """Planar images via Pillow, returned channels-first and scaled to [0, 1]."""
 
@@ -78,7 +90,9 @@ class VolumeLoader:
         affine = getattr(tensor, "affine", None)
         if affine is not None:
             affine = torch.as_tensor(affine)
-            spacing = tuple(float(affine[i, i].abs()) for i in range(min(3, affine.shape[0] - 1)))
+            # Voxel size is the norm of each affine basis vector, not merely the
+            # diagonal element. The diagonal shortcut is wrong for rotated volumes.
+            spacing = _spacing_from_affine(affine, data.ndim - 1)
 
         meta = ScanMetadata(
             spacing=spacing,

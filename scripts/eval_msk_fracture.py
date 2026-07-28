@@ -23,6 +23,7 @@ Run:  python scripts/eval_msk_fracture.py --n 300
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -39,7 +40,12 @@ from core.types import Scan, ScanMetadata
 from experts.msk_fracture import GRAZPEDWRI_LABELS, MSKFractureExpert
 
 _LABEL_INDEX = {name: i for i, name in enumerate(GRAZPEDWRI_LABELS)}
-_CACHE_DIR = Path("/private/tmp/claude-501/-Users-boukaderhamza-Documents-AI-Doctor-Assistant/e6153783-edb0-411d-a995-81f604828633/scratchpad")
+_CACHE_DIR = Path(
+    os.environ.get(
+        "DOCTOR_ASSISTANT_CACHE_DIR",
+        Path.home() / ".cache" / "doctor_assistant" / "evaluation",
+    )
+)
 
 
 def _to_multihot(label_str: str) -> np.ndarray:
@@ -51,8 +57,9 @@ def _to_multihot(label_str: str) -> np.ndarray:
     return vec
 
 
-def load_sample(n: int, seed: int):
-    cache_path = _CACHE_DIR / f"grazpedwri_sample_n{n}_seed{seed}.pt"
+def load_sample(n: int, seed: int, cache_dir: Path = _CACHE_DIR):
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / f"grazpedwri_sample_n{n}_seed{seed}.pt"
     if cache_path.is_file():
         print(f"Loading cached sample from {cache_path}")
         blob = torch.load(cache_path, weights_only=False)
@@ -99,11 +106,17 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=300)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--confidence", type=float, default=0.25)
+    ap.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=_CACHE_DIR,
+        help="sample cache directory (or set DOCTOR_ASSISTANT_CACHE_DIR)",
+    )
     args = ap.parse_args()
 
     from sklearn.metrics import roc_auc_score
 
-    images, labels = load_sample(args.n, args.seed)
+    images, labels = load_sample(args.n, args.seed, args.cache_dir)
     print(f"Sample: {len(images)} images")
     print("Per-class positive counts:",
           {c: int(labels[:, i].sum()) for i, c in enumerate(GRAZPEDWRI_LABELS)})

@@ -108,6 +108,9 @@ class Trainer:
                 "epoch": epoch,
                 "model": base.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
+                "scheduler": (
+                    self.scheduler.state_dict() if self.scheduler is not None else None
+                ),
                 "scaler": self.scaler.state_dict(),
                 "best_metric": self.best_metric,
                 "class_names": self.evaluator.class_names,
@@ -123,6 +126,8 @@ class Trainer:
         from models.experts import strip_orig_mod
         self.model.load_state_dict(strip_orig_mod(ckpt["model"]))
         self.optimizer.load_state_dict(ckpt["optimizer"])
+        if self.scheduler is not None and ckpt.get("scheduler") is not None:
+            self.scheduler.load_state_dict(ckpt["scheduler"])
         self.scaler.load_state_dict(ckpt["scaler"])
         self.best_metric = ckpt.get("best_metric", float("-inf"))
         self.start_epoch = ckpt["epoch"] + 1
@@ -137,10 +142,12 @@ class Trainer:
             metrics = self._validate(val_loader)
 
             score = self._monitored_score(metrics)
-            self._save("last.pt", epoch)
             if score > self.best_metric:
                 self.best_metric = score
                 self._save("best.pt", epoch)
+            # Save last *after* updating best_metric so a resumed run sees the true
+            # best score through this epoch rather than a value one epoch behind.
+            self._save("last.pt", epoch)
 
             if self.scheduler is not None:
                 if hasattr(self.scheduler, "step"):
@@ -210,7 +217,9 @@ class Trainer:
     def _monitored_score(self, metrics: dict) -> float:
         value = metrics.get(self.config.monitor)
         if value is None:  # metric undefined this epoch (e.g. AUC with one class)
-            value = metrics.get("macro_sensitivity") or metrics.get("accuracy", 0.0)
+            value = metrics.get("macro_sensitivity")
+        if value is None:
+            value = metrics.get("accuracy", 0.0)
         return float(value)
 
     @staticmethod

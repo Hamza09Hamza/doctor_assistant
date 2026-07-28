@@ -163,8 +163,9 @@ run. Untested without that real run.
 
 ### Why this modality, and why now
 
-Chest X-ray and brain MRI already have working experts. Head CT (bleed detection) and MSK
-fracture were identified as the next two most clinically mature, best-open-data modalities
+Chest X-ray has a working pretrained adapter. The earlier brain-MRI project is referenced
+by this repository, but no brain-MRI expert is implemented here. Head CT (bleed detection)
+and MSK fracture were identified as the next two clinically mature, open-data modalities
 (a broader research pass compared these against mammography, lung nodule CT, and others —
 see the earlier research digest artifact). MSK fracture was picked to build *first*
 because it's a plain 2D X-ray problem (no DICOM volumetric windowing, no 3D dependency

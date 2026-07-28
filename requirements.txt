@@ -14,6 +14,7 @@ timm>=0.9
 # Imaging / arrays
 numpy>=1.26
 Pillow>=10.0
+scipy>=1.12
 scikit-image>=0.22
 
 # Metrics / evaluation

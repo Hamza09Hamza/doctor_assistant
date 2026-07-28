@@ -16,8 +16,8 @@ Two extraction paths, because findings come from different places per modality:
       Chest X-ray lives here: 14 findings can co-occur, there are no masks, so
       *where* comes from Grad-CAM via a `Localizer`.
   - `findings_from_mask`            connected-component geometry on a segmentation mask.
-      Brain MRI lives here: size in mm and volume in mL are measured off the mask
-      using the scan's voxel `spacing`.
+      This modality-agnostic utility measures size in mm and volume in mL from a mask
+      using the scan's voxel `spacing`; it is not itself a brain-MRI expert.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ class Finding:
     label: str                              # e.g. "Cardiomegaly", "glioma"
     probability: float                      # model score for this finding, [0, 1]
     present: bool = True                    # passed the decision threshold
-    confidence: float | None = None         # calibrated reliability of the prediction
+    confidence: float | None = None         # optional reliability score; calibration is caller-owned
 
     # --- quantitative detail (filled only when measurable) ---
     size_mm: float | None = None            # largest diameter, mm

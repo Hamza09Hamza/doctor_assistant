@@ -10,10 +10,10 @@ with zero model calls, because all the ground truth is already attached to the r
 Two layers, cheapest first:
 
   - Deterministic grounding (always on): every numeric value in the prose must match a
-    measured value in the findings (size, volume, probability, confidence, count); every
-    *named pathology* drawn from the known label set must correspond to a present finding.
-    Numbers that match nothing, or findings asserted that the model never flagged, are
-    hard flags — these are the hallucinations that matter clinically.
+    measured value of the same unit in the findings (size, volume, probability,
+    confidence, count); every *named pathology* drawn from the known label set must
+    correspond to a present finding; and every present finding must be represented in
+    the report. Violations are hard flags.
 
   - Optional LLM entailment (if an `LLMClient` is given): a second pass asks a model
     whether each report sentence is entailed by the findings JSON. Useful for catching
@@ -30,8 +30,13 @@ from collections.abc import Sequence
 from .findings import Finding
 from .reporter import LLMClient, StructuredReport
 
-# Numbers that carry a unit we measure, e.g. "12 mm", "3.4 mL", "score 0.87", "42%".
-_NUMBER_RE = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)\s*(mm|ml|%)?", re.IGNORECASE)
+# Numbers that carry a unit we measure, e.g. "12 mm", "3.4 mL", "score 0.87", "42%",
+# or "3 foci". Count nouns are included so small counts are not mistaken for prose.
+_NUMBER_RE = re.compile(
+    r"(?<![\w.])(\d+(?:\.\d+)?)\s*"
+    r"(mm|ml|%|foci|focus|lesions?|nodules?|masses?)?",
+    re.IGNORECASE,
+)
 # Tolerance for matching a prose number to a measured value (covers rounding in to_facts).
 _ABS_TOL = 0.05
 
@@ -71,10 +76,12 @@ class Verifier:
         known_labels: Sequence[str] | None = None,
         llm: LLMClient | None = None,
         abs_tol: float = _ABS_TOL,
+        require_all_findings: bool = True,
     ) -> None:
         self.known_labels = list(known_labels) if known_labels else []
         self.llm = llm
         self.abs_tol = abs_tol
+        self.require_all_findings = require_all_findings
 
     # -- public API ----------------------------------------------------------
     def verify(self, report: StructuredReport) -> VerificationResult:
@@ -89,7 +96,10 @@ class Verifier:
                      for tok in checked if not tok.endswith("[ok]"))
         checked_display = [t.replace("[ok]", "") for t in checked]
 
-        warnings.extend(self._check_unsupported_labels(prose, present))
+        flags.extend(self._check_unsupported_labels(prose, present))
+        if self.require_all_findings:
+            flags.extend(self._check_missing_findings(prose, present))
+        flags.extend(self._check_negated_present_findings(prose, present))
 
         if self.llm is not None:
             warnings.extend(self._llm_entailment(report, present))
@@ -105,21 +115,29 @@ class Verifier:
         )
 
     # -- deterministic checks ------------------------------------------------
-    def _allowed_numbers(self, present: Sequence[Finding]) -> list[float]:
-        """Every numeric value the prose is permitted to contain."""
-        allowed: list[float] = []
+    def _allowed_numbers(
+        self, present: Sequence[Finding]
+    ) -> dict[str, list[float]]:
+        """Every numeric value the prose may contain, grouped by semantic unit."""
+        allowed: dict[str, list[float]] = {
+            "": [],       # unitless probability, confidence, or count
+            "%": [],
+            "mm": [],
+            "ml": [],
+            "count": [],
+        }
         for f in present:
-            allowed.append(round(f.probability, 3))
-            allowed.append(round(f.probability * 100, 1))  # probability stated as %
+            allowed[""].append(round(f.probability, 3))
+            allowed["%"].append(round(f.probability * 100, 1))
             if f.confidence is not None:
-                allowed.append(round(f.confidence, 3))
-                allowed.append(round(f.confidence * 100, 1))
+                allowed[""].append(round(f.confidence, 3))
+                allowed["%"].append(round(f.confidence * 100, 1))
             if f.size_mm is not None:
-                allowed.append(round(f.size_mm, 1))
+                allowed["mm"].extend((round(f.size_mm, 1), round(f.size_mm, 0)))
             if f.volume_ml is not None:
-                allowed.append(round(f.volume_ml, 2))
+                allowed["ml"].extend((round(f.volume_ml, 2), round(f.volume_ml, 1)))
             if f.count != 1:
-                allowed.append(float(f.count))
+                allowed["count"].append(float(f.count))
         return allowed
 
     def _check_numbers(
@@ -138,12 +156,18 @@ class Verifier:
         for match in _NUMBER_RE.finditer(prose):
             value = float(match.group(1))
             unit = (match.group(2) or "").lower()
+            if unit in {
+                "foci", "focus", "lesion", "lesions", "nodule", "nodules",
+                "mass", "masses",
+            }:
+                unit = "count"
             # Skip bare small integers with no unit — almost always ordinary prose.
             if not unit and value == int(value) and value <= 12 and "." not in match.group(1):
                 continue
             total += 1
             token = match.group(0).strip()
-            if any(abs(value - a) <= self.abs_tol for a in allowed):
+            candidates = allowed.get(unit, ())
+            if any(abs(value - a) <= self.abs_tol for a in candidates):
                 grounded += 1
                 tokens.append(token + "[ok]")
             else:
@@ -156,7 +180,7 @@ class Verifier:
         """Flag any *known* pathology named in the prose that isn't a present finding."""
         if not self.known_labels:
             return []
-        prose_l = prose.lower()
+        prose_l = prose.replace("_", " ").lower()
         present_terms = {self._normalize(f.label) for f in present}
         warnings: list[str] = []
         for label in self.known_labels:
@@ -166,6 +190,58 @@ class Verifier:
                     f"report mentions '{label}' but it is not a present finding"
                 )
         return warnings
+
+    def _check_missing_findings(
+        self, prose: str, present: Sequence[Finding]
+    ) -> list[str]:
+        """Require every present structured finding to survive report drafting.
+
+        Exact canonical labels are intentional here: the reporter is instructed not to
+        rename model outputs, and accepting arbitrary synonyms would require another
+        fallible semantic model in the deterministic safety layer.
+        """
+        prose_l = prose.replace("_", " ").lower()
+        missing: list[str] = []
+        seen: set[str] = set()
+        for finding in present:
+            term = self._normalize(finding.label)
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            if term not in prose_l:
+                missing.append(
+                    f"present finding '{finding.label}' is missing from the report"
+                )
+        return missing
+
+    def _check_negated_present_findings(
+        self, prose: str, present: Sequence[Finding]
+    ) -> list[str]:
+        """Catch direct contradictions such as "no effusion" for a present finding."""
+        normalized = prose.replace("_", " ").lower()
+        negation = re.compile(
+            r"\b(?:no|without|absent|negative for|free of)\s+(?:evidence of\s+)?$"
+        )
+        flags: list[str] = []
+        seen: set[str] = set()
+        for finding in present:
+            term = self._normalize(finding.label)
+            if not term or term in seen:
+                continue
+            seen.add(term)
+            start = 0
+            while True:
+                index = normalized.find(term, start)
+                if index < 0:
+                    break
+                prefix = normalized[max(0, index - 40):index]
+                if negation.search(prefix):
+                    flags.append(
+                        f"report negates present finding '{finding.label}'"
+                    )
+                    break
+                start = index + len(term)
+        return flags
 
     @staticmethod
     def _normalize(label: str) -> str:

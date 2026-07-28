@@ -25,6 +25,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -42,6 +43,8 @@ from data.chest_xray14 import CHESTXRAY14_LABELS
 from experts.torchxrayvision import TorchXRayVisionExpert
 
 _LABEL_INDEX = {name: i for i, name in enumerate(CHESTXRAY14_LABELS)}
+_DATASET_ID = "BahaaEldin0/NIH-Chest-Xray-14"
+_DATASET_REVISION = "932bcdba9d7d9590704d4f20bc70fc2c3a1bbad7"
 
 # Short config name -> torchxrayvision weight string. Extend here to try more combinations.
 _WEIGHT_MAP = {
@@ -54,7 +57,12 @@ _WEIGHT_MAP = {
     "rsna": "densenet121-res224-rsna",
 }
 
-_CACHE_DIR = Path("/private/tmp/claude-501/-Users-boukaderhamza-Documents-AI-Doctor-Assistant/e6153783-edb0-411d-a995-81f604828633/scratchpad")
+_CACHE_DIR = Path(
+    os.environ.get(
+        "DOCTOR_ASSISTANT_CACHE_DIR",
+        Path.home() / ".cache" / "doctor_assistant" / "evaluation",
+    )
+)
 
 
 def _to_multihot(raw_labels: list[str]) -> np.ndarray:
@@ -65,10 +73,19 @@ def _to_multihot(raw_labels: list[str]) -> np.ndarray:
     return vec
 
 
-def load_sample(n: int, seed: int):
+def load_sample(
+    n: int,
+    seed: int,
+    cache_dir: Path = _CACHE_DIR,
+    dataset_revision: str = _DATASET_REVISION,
+):
     """Stream `n` real, labeled test images, caching to disk so repeat comparisons
     against different weight-set configs don't re-stream from HF each time."""
-    cache_path = _CACHE_DIR / f"nih_sample_n{n}_seed{seed}.pt"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = (
+        cache_dir
+        / f"nih_test_n{n}_seed{seed}_rev{dataset_revision[:12]}.pt"
+    )
     if cache_path.is_file():
         print(f"Loading cached sample from {cache_path}")
         blob = torch.load(cache_path, weights_only=False)
@@ -77,14 +94,21 @@ def load_sample(n: int, seed: int):
     from datasets import load_dataset
 
     print(f"Streaming {n} test images from BahaaEldin0/NIH-Chest-Xray-14 ...")
-    ds = load_dataset("BahaaEldin0/NIH-Chest-Xray-14", split="test", streaming=True)
+    ds = load_dataset(
+        _DATASET_ID,
+        split="test",
+        streaming=True,
+        revision=dataset_revision,
+    )
     ds = ds.shuffle(seed=seed, buffer_size=min(4000, max(200, n * 4)))
 
     images, label_vecs = [], []
     t0 = time.time()
     for row in ds.take(n):
         img = row["image"].convert("L")  # (1024, 1024) grayscale PNG
-        arr = np.asarray(img, dtype=np.float32) / 255.0
+        # Preserve uint8 in the cache; the expert owns normalization. This cuts the
+        # full-resolution sample cache and RAM footprint by 4× on Colab.
+        arr = np.asarray(img, dtype=np.uint8)
         images.append(torch.from_numpy(arr).unsqueeze(0))  # (1, H, W)
         label_vecs.append(_to_multihot(row["label"]))
     print(f"  done in {time.time() - t0:.1f}s")
@@ -116,25 +140,78 @@ def compute_aucs(probs: np.ndarray, labels: np.ndarray) -> dict[str, float | Non
     return aucs
 
 
+def compute_threshold_metrics(
+    probs: np.ndarray, labels: np.ndarray, threshold: float
+) -> dict[str, float]:
+    """Operational metrics at the threshold that turns scores into report findings."""
+    pred = probs >= threshold
+    truth = labels > 0
+    sensitivities: list[float] = []
+    specificities: list[float] = []
+    for i in range(labels.shape[1]):
+        positive = truth[:, i]
+        negative = ~positive
+        if positive.any():
+            sensitivities.append(float(pred[positive, i].mean()))
+        if negative.any():
+            specificities.append(float((~pred[negative, i]).mean()))
+
+    normal = truth.sum(axis=1) == 0
+    normal_any_fp = float(pred[normal].any(axis=1).mean()) if normal.any() else float("nan")
+    normal_mean_findings = (
+        float(pred[normal].sum(axis=1).mean()) if normal.any() else float("nan")
+    )
+    return {
+        "macro_sensitivity": float(np.mean(sensitivities)) if sensitivities else float("nan"),
+        "macro_specificity": float(np.mean(specificities)) if specificities else float("nan"),
+        "normal_any_false_positive": normal_any_fp,
+        "normal_mean_findings": normal_mean_findings,
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=300, help="number of test images to pull")
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=_CACHE_DIR,
+        help="sample cache directory (or set DOCTOR_ASSISTANT_CACHE_DIR)",
+    )
+    ap.add_argument(
+        "--dataset-revision",
+        default=_DATASET_REVISION,
+        help="pinned Hugging Face dataset commit",
+    )
     ap.add_argument(
         "--configs",
         type=str,
         default="all,nih,chex,all+nih,all+chex,all+nih+chex",
         help="comma-separated list of +-joined short weight names, e.g. 'all,all+nih'",
     )
+    ap.add_argument(
+        "--thresholds",
+        default="0.5,0.6,0.7,0.8",
+        help="comma-separated reporting thresholds for sensitivity/specificity checks",
+    )
     args = ap.parse_args()
 
-    images, labels = load_sample(args.n, args.seed)
+    images, labels = load_sample(
+        args.n,
+        args.seed,
+        args.cache_dir,
+        args.dataset_revision,
+    )
     print(f"Sample: {len(images)} images, {labels.sum():.0f} total positive label instances")
     print("Per-label positive counts:",
           {c: int(labels[:, i].sum()) for i, c in enumerate(CHESTXRAY14_LABELS)})
 
     config_names = [c.strip() for c in args.configs.split(",") if c.strip()]
-    results: dict[str, tuple[dict[str, float | None], float]] = {}
+    thresholds = [float(value) for value in args.thresholds.split(",") if value.strip()]
+    if not thresholds or any(not 0.0 <= value <= 1.0 for value in thresholds):
+        ap.error("--thresholds must contain values between 0 and 1")
+    results: dict[str, tuple[dict[str, float | None], float, np.ndarray]] = {}
 
     for config in config_names:
         short_names = config.split("+")
@@ -145,18 +222,28 @@ def main() -> None:
         aucs = compute_aucs(probs, labels)
         valid = [v for v in aucs.values() if v is not None]
         macro = float(np.mean(valid)) if valid else float("nan")
-        results[config] = (aucs, macro)
+        results[config] = (aucs, macro, probs)
         print(f"  [{config:<16}] macro AUC over {len(valid)} labels: {macro:.4f}  ({time.time() - t0:.1f}s)")
+        print("    reporting-threshold behavior:")
+        for threshold in thresholds:
+            operational = compute_threshold_metrics(probs, labels, threshold)
+            print(
+                f"      t={threshold:.2f}  "
+                f"macro sensitivity={operational['macro_sensitivity']:.3f}  "
+                f"macro specificity={operational['macro_specificity']:.3f}  "
+                f"normal studies with any FP={operational['normal_any_false_positive']:.3f}  "
+                f"mean findings/normal={operational['normal_mean_findings']:.2f}"
+            )
 
     print("\n=== Summary, best to worst ===")
-    for config, (_, macro) in sorted(results.items(), key=lambda kv: -kv[1][1]):
+    for config, (_, macro, _) in sorted(results.items(), key=lambda kv: -kv[1][1]):
         print(f"  {config:<16} macro AUC = {macro:.4f}")
 
     baseline = "all"
     if baseline in results:
-        base_aucs, base_macro = results[baseline]
+        base_aucs, base_macro, _ = results[baseline]
         print(f"\n=== Per-label detail vs baseline '{baseline}' (macro {base_macro:.4f}) ===")
-        for config, (aucs, macro) in results.items():
+        for config, (aucs, macro, _) in results.items():
             if config == baseline:
                 continue
             print(f"\n--- {config} (macro {macro:.4f}, delta {macro - base_macro:+.4f}) ---")

@@ -74,16 +74,14 @@ def _labels_of(example: dict) -> list[str]:
 def _collect(stream, per_class: int, normals: int, max_scan: int) -> list[tuple[dict, list[str]]]:
     """Scan the stream and pick a curated set.
 
-    For each pathology we keep the first *single-label* example (cleanest signal),
-    falling back to the first example that merely contains it. Plus `normals`
-    "No Finding" images. Returns [(example, kept_labels), ...].
+    For each pathology we keep up to ``per_class`` *single-label* examples (cleanest
+    signal), falling back to multi-label examples that contain it. Plus ``normals``
+    "No Finding" images. The same study is emitted at most once even if it contains
+    several target pathologies. Returns [(example, kept_labels), ...].
     """
-    single: dict[str, dict] = {}          # pathology -> single-label example
-    multi: dict[str, dict] = {}           # pathology -> any example containing it
+    single: dict[str, list[dict]] = {p: [] for p in TARGET_PATHOLOGIES}
+    multi: dict[str, list[dict]] = {p: [] for p in TARGET_PATHOLOGIES}
     chosen_normals: list[dict] = []
-
-    def _need_pathology(p: str) -> bool:
-        return p in TARGET_PATHOLOGIES and len(single.get(p, ()) or ()) == 0
 
     for n, ex in enumerate(stream):
         if n >= max_scan:
@@ -98,27 +96,34 @@ def _collect(stream, per_class: int, normals: int, max_scan: int) -> list[tuple[
             for p in positives:
                 if p not in TARGET_PATHOLOGIES:
                     continue
-                if len(positives) == 1 and p not in single:
-                    single[p] = ex
-                elif p not in multi:
-                    multi[p] = ex
+                if len(positives) == 1:
+                    if len(single[p]) < per_class:
+                        single[p].append(ex)
+                elif len(multi[p]) < per_class * len(TARGET_PATHOLOGIES):
+                    # Keep extra fallbacks because one multi-label study may be claimed
+                    # by another pathology during global de-duplication.
+                    multi[p].append(ex)
 
         have_all = (
-            all(p in single for p in TARGET_PATHOLOGIES)
+            all(len(single[p]) >= per_class for p in TARGET_PATHOLOGIES)
             and len(chosen_normals) >= normals
         )
         if have_all:
             break
 
     out: list[tuple[dict, list[str]]] = []
+    used: set[int] = set()
     for p in TARGET_PATHOLOGIES:
-        ex = single.get(p) or multi.get(p)
-        if ex is None:
-            continue
-        kept = [l for l in _labels_of(ex) if l != _NO_FINDING]
-        for _ in range(per_class):
+        picked = 0
+        for ex in [*single[p], *multi[p]]:
+            if id(ex) in used:
+                continue
+            used.add(id(ex))
+            kept = [l for l in _labels_of(ex) if l != _NO_FINDING]
             out.append((ex, kept))
-            break  # per_class>1 would need distinct examples; one clean case is enough
+            picked += 1
+            if picked >= per_class:
+                break
     for ex in chosen_normals[:normals]:
         out.append((ex, []))
     return out

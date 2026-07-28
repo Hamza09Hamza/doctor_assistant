@@ -111,7 +111,8 @@ doctor_assistant/
 │   ├── smoke_report.py         # reporting-layer smoke checks
 │   └── smoke_system.py         # end-to-end system smoke checks
 └── notebooks/
-    └── system_test.ipynb       # mixed-scenario development notebook
+    ├── system_test.ipynb                 # mixed-scenario wiring notebook
+    └── classifier_evaluation_colab.ipynb # Colab model-evaluation workflow
 ```
 
 Some modules may change, move, or be replaced as the architecture is tested.
@@ -181,17 +182,24 @@ The repository is still changing, so dependency installation may differ by exper
 Basic smoke checks can be launched from the repository root:
 
 ```bash
+python -m unittest discover -s tests -v
 python scripts/smoke_report.py
 python scripts/smoke_system.py
 ```
 
-The mixed-scenario notebook is located at:
+Environment setup, optional expert dependencies, cache configuration, and the separate
+TotalSegmentator runtime are documented in
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
+
+Use the focused Google Colab notebook for classifier-by-classifier validation,
+error analysis, threshold selection, and frozen held-out evaluation:
 
 ```text
-notebooks/system_test.ipynb
+notebooks/classifier_evaluation_colab.ipynb
 ```
 
-These checks are intended to catch software-integration failures such as broken imports, routing mistakes, incompatible payloads, unavailable experts, and report-generation errors. Passing them is **not** a clinical-performance result.
+The separate `notebooks/system_test.ipynb` remains a mixed-scenario integration and
+wiring demonstration. Passing either workflow is **not** a clinical-performance result.
 
 ## Metrics and evaluation policy
 
@@ -221,6 +229,10 @@ Until such an evaluation is completed and reproducible, any values produced duri
 - Some expert adapters rely on gated or large external models.
 - Different model stacks can require incompatible Python environments.
 - Current rules and thresholds are not clinically validated.
+- A small real-data integration run confirmed that a single global chest threshold can
+  severely overcall findings; per-label thresholds must be selected on a separate
+  validation set before report outputs are interpreted. See
+  [`docs/STABILIZATION_NOTES.md`](docs/STABILIZATION_NOTES.md).
 - Generated recommendations are not a substitute for medical guidelines applied by a qualified professional.
 - Report verification cannot guarantee factual or clinical correctness.
 - Dataset shift, scanner differences, acquisition protocols, and image quality can change model behavior.

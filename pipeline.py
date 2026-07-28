@@ -13,6 +13,7 @@ conventional next step. No stage invents facts another stage didn't supply.
 
 from __future__ import annotations
 
+import copy
 import warnings
 from dataclasses import dataclass, field
 
@@ -36,10 +37,13 @@ class AnalysisResult:
 
     scan: Scan
     experts: list[str] = field(default_factory=list)
+    expert_failures: dict[str, str] = field(default_factory=dict)
     predictions: list[Prediction] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     report: StructuredReport | None = None
     verification: VerificationResult | None = None
+    rejected_report: StructuredReport | None = None
+    rejected_verification: VerificationResult | None = None
     recommendations: list[Recommendation] = field(default_factory=list)
 
     @property
@@ -59,6 +63,14 @@ class AnalysisResult:
             lines.append("\nVERIFICATION:")
             lines.append(self.verification.summary())
         return "\n".join(lines)
+
+
+class PipelineExecutionError(RuntimeError):
+    """Raised when experts were routed but none completed successfully."""
+
+
+class ReportVerificationError(RuntimeError):
+    """Raised when neither the drafted report nor deterministic fallback verifies."""
 
 
 class Pipeline:
@@ -81,7 +93,9 @@ class Pipeline:
         localizer: Localizer | None = None,
     ) -> None:
         self.router = router
-        self.reporter = reporter if reporter is not None else Reporter()
+        # Deterministic reporting is the safe default. Local LLM wording remains an
+        # explicit opt-in by passing Reporter(llm=...), and is still verification-gated.
+        self.reporter = reporter if reporter is not None else Reporter(llm=None)
         self.verifier = verifier  # None -> built per-expert so known_labels are set
         self.guidelines = guidelines if guidelines is not None else GuidelineEngine()
         self.thresholds = thresholds
@@ -98,6 +112,7 @@ class Pipeline:
         """Run the pipeline on an already-loaded `Scan`."""
         result = AnalysisResult(scan=scan)
         experts = self.router.route(scan)
+        successful_experts: list[ExpertModel] = []
 
         all_findings: list[Finding] = []
         for expert in experts:
@@ -108,9 +123,14 @@ class Pipeline:
             # report. A failed expert is NOT recorded in result.experts/predictions, so
             # the summary reflects only what actually ran.
             try:
-                pred = expert.predict(scan)
-                findings = self._findings_for(expert, pred, scan)
+                # Several pretrained adapters attach model-specific data to
+                # ScanMetadata.extra. Give every expert a private metadata object so one
+                # reader cannot leak state into another reader or mutate result.scan.
+                expert_scan = Scan(data=scan.data, meta=copy.deepcopy(scan.meta))
+                pred = expert.predict(expert_scan)
+                findings = self._findings_for(expert, pred, expert_scan)
             except Exception as exc:  # noqa: BLE001 — deliberately broad; isolate the expert
+                result.expert_failures[expert.name] = f"{type(exc).__name__}: {exc}"
                 warnings.warn(
                     f"Pipeline: expert {expert.name!r} failed and was skipped "
                     f"({type(exc).__name__}: {exc}).",
@@ -118,9 +138,22 @@ class Pipeline:
                     stacklevel=2,
                 )
                 continue
+            successful_experts.append(expert)
             result.experts.append(expert.name)
             result.predictions.append(pred)
             all_findings.extend(findings)
+
+        # Failure isolation is useful only while at least one independent reader
+        # completed. Treating "every model crashed" as a normal study would be a
+        # dangerous false-negative report, so stop explicitly instead.
+        if experts and not successful_experts:
+            details = "; ".join(
+                f"{name}: {error}" for name, error in result.expert_failures.items()
+            )
+            raise PipelineExecutionError(
+                "All routed experts failed; no report was generated."
+                + (f" Failures: {details}" if details else "")
+            )
 
         # Salience order: present first, then by probability.
         all_findings.sort(key=lambda f: (f.present, f.probability), reverse=True)
@@ -128,7 +161,29 @@ class Pipeline:
 
         result.report = self.reporter.report(all_findings, scan.meta)
         result.recommendations = self.guidelines.recommend(all_findings)
-        result.verification = self._verify(result.report, experts)
+        result.verification = self._verify(result.report, successful_experts)
+        if not result.verification.ok:
+            # Never hand an ungrounded generated draft to the caller as the active
+            # report. Preserve it for audit, replace it with the deterministic
+            # fact-only template, and verify that fallback too.
+            result.rejected_report = result.report
+            result.rejected_verification = result.verification
+            warnings.warn(
+                "Pipeline: drafted report failed verification; using the "
+                "deterministic reporting fallback.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            fallback = Reporter(llm=None).report(all_findings, scan.meta)
+            fallback.generator = "template (verification-fallback)"
+            fallback_verification = self._verify(fallback, successful_experts)
+            if not fallback_verification.ok:
+                raise ReportVerificationError(
+                    "Draft and deterministic fallback both failed report verification. "
+                    f"Fallback verdict: {fallback_verification.summary()}"
+                )
+            result.report = fallback
+            result.verification = fallback_verification
         return result
 
     # -- internals -----------------------------------------------------------
@@ -141,7 +196,7 @@ class Pipeline:
         `findings_from_prediction(scan, prediction) -> list[Finding]` — used when the
         model's output is richer than the generic decoders (TotalSegmentator's many
         organ masks, MAIRA-2's grounded sentences). Otherwise: a segmentation mask gives
-        measured geometry (brain MRI), and class scores give thresholded findings with
+        generic measured lesion geometry, and class scores give thresholded findings with
         optional Grad-CAM localization (chest X-ray).
         """
         provider = getattr(expert, "findings_from_prediction", None)
@@ -159,9 +214,7 @@ class Pipeline:
                 probability=pred.top_score or 1.0,
             )
 
-        heatmaps = {pred.top_label: pred.heatmap} if (
-            pred.heatmap is not None and pred.top_label is not None
-        ) else None
+        heatmaps = self._classification_heatmaps(expert, pred, scan)
         return findings_from_classification(
             pred.class_probs,
             thresholds=self.thresholds,
@@ -169,6 +222,57 @@ class Pipeline:
             heatmaps=heatmaps,
             localizer=self.localizer,
         )
+
+    def _classification_heatmaps(
+        self, expert: ExpertModel, pred: Prediction, scan: Scan
+    ) -> dict[str, object] | None:
+        """Return available heatmaps, computing Grad-CAM for present labels when possible.
+
+        Pretrained adapters may provide a single heatmap directly. Trainable
+        ``BaseExpert``-style models expose a backbone and classification heads, so when
+        localization is requested we can compute a map for every above-threshold label.
+        Explainability failure is non-fatal: the scored finding remains useful without a
+        location and the failure is surfaced as a warning.
+        """
+        if pred.heatmap is not None and pred.top_label is not None:
+            return {pred.top_label: pred.heatmap}
+        if self.localizer is None:
+            return None
+        if not hasattr(expert, "backbone") or not hasattr(expert, "heads"):
+            return None
+
+        wanted = [
+            label
+            for label, probability in pred.class_probs.items()
+            if probability >= self._threshold_for(label)
+        ]
+        if not wanted:
+            return None
+
+        try:
+            from explainability import GradCAM
+
+            data = (
+                expert.preprocess(scan.data)
+                if getattr(expert, "preprocess", None) is not None
+                else scan.data
+            )
+            return GradCAM(expert).for_labels(data, labels=wanted)
+        except Exception as exc:  # noqa: BLE001 — localization must not discard prediction
+            warnings.warn(
+                f"Pipeline: localization for expert {expert.name!r} failed "
+                f"({type(exc).__name__}: {exc}); findings will be unlocalized.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
+
+    def _threshold_for(self, label: str) -> float:
+        if isinstance(self.thresholds, dict):
+            return float(
+                self.thresholds.get(label, self.thresholds.get("__default__", 0.5))
+            )
+        return float(self.thresholds)
 
     def _verify(
         self, report: StructuredReport, experts: list[ExpertModel]
