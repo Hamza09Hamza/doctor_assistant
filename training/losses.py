@@ -19,11 +19,69 @@ from core.enums import TaskType
 from core.types import HeadOutput
 
 
+class AsymmetricLoss(nn.Module):
+    """Asymmetric Loss for multi-label classification (Ben-Baruch et al., 2021).
+
+    Chest-X-ray-style multi-label data is heavily imbalanced *per class* (Hernia is
+    ~0.2% positive, Infiltration ~18%), and every label is dominated by easy negatives.
+    Plain BCE spends most of its gradient on those easy negatives, drowning out the
+    rare-positive signal — the mechanism behind "14 labels tanks accuracy vs. a few".
+    ASL applies a focal-style down-weighting to negatives only (`gamma_neg > gamma_pos`)
+    and a probability-shifting `clip` on negatives, so confidently-correct negatives
+    contribute almost nothing while positives keep a normal gradient.
+    """
+
+    def __init__(
+        self,
+        gamma_neg: float = 4.0,
+        gamma_pos: float = 1.0,
+        clip: float = 0.05,
+        eps: float = 1e-8,
+    ) -> None:
+        super().__init__()
+        self.gamma_neg = gamma_neg
+        self.gamma_pos = gamma_pos
+        self.clip = clip
+        self.eps = eps
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        targets = targets.float()
+        anti_targets = 1.0 - targets
+
+        xs_pos = torch.sigmoid(logits)
+        xs_neg = 1.0 - xs_pos
+        if self.clip is not None and self.clip > 0:
+            # Shift negative-class probability up before the log so a negative sitting
+            # just inside the decision boundary isn't penalized at all — only genuinely
+            # wrong negatives contribute loss.
+            xs_neg = (xs_neg + self.clip).clamp(max=1.0)
+
+        loss = targets * torch.log(xs_pos.clamp(min=self.eps))
+        loss = loss + anti_targets * torch.log(xs_neg.clamp(min=self.eps))
+
+        if self.gamma_neg > 0 or self.gamma_pos > 0:
+            # Focal-style modulation, asymmetric between classes: easy negatives
+            # (xs_neg_w close to 1) get crushed by gamma_neg; positives are barely
+            # touched by the smaller gamma_pos.
+            xs_pos_w = xs_pos * targets
+            xs_neg_w = xs_neg * anti_targets
+            asymmetric_w = torch.pow(
+                (1.0 - xs_pos_w - xs_neg_w).clamp(min=0.0),
+                self.gamma_pos * targets + self.gamma_neg * anti_targets,
+            )
+            loss = loss * asymmetric_w
+
+        return -loss.mean()
+
+
 class MultiTaskLoss(nn.Module):
     def __init__(
         self,
         weights: dict[str, float] | None = None,
         multilabel: bool = False,
+        asl_gamma_neg: float = 4.0,
+        asl_gamma_pos: float = 1.0,
+        asl_clip: float = 0.05,
     ) -> None:
         super().__init__()
         self.weights = weights or {}
@@ -31,7 +89,15 @@ class MultiTaskLoss(nn.Module):
         # multilabel=False: brain-tumour style — mutually exclusive, softmax + CE.
         self.multilabel = multilabel
         self.ce = nn.CrossEntropyLoss()
-        self.bce = nn.BCEWithLogitsLoss()
+        self.bce = nn.BCEWithLogitsLoss()  # still used for the confidence head (see _term)
+        # Multilabel classification uses ASL instead of plain BCE (see AsymmetricLoss
+        # docstring); the confidence head's binary "was I correct" target is not the
+        # imbalanced-label problem ASL targets, so it keeps self.bce regardless of this.
+        self.multilabel_loss = (
+            AsymmetricLoss(gamma_neg=asl_gamma_neg, gamma_pos=asl_gamma_pos, clip=asl_clip)
+            if multilabel
+            else None
+        )
         self._seg_loss = None  # built lazily so MONAI import isn't required for cls-only
 
     def _seg(self):
@@ -65,7 +131,7 @@ class MultiTaskLoss(nn.Module):
         if out.task is TaskType.CLASSIFICATION and "label" in targets:
             if self.multilabel:
                 # targets["label"] is a float multi-hot vector (batch, num_classes)
-                return self.bce(out.tensor, targets["label"].float())
+                return self.multilabel_loss(out.tensor, targets["label"])
             return self.ce(out.tensor, targets["label"])
         if out.task is TaskType.SEGMENTATION and "mask" in targets:
             return self._seg()(out.tensor, targets["mask"])

@@ -2,12 +2,13 @@
 
 Why this exists: training our own DenseNet on a Colab budget only reached ~0.74 AUC with
 badly-calibrated logits (every probability squashed below ~0.15), so real findings never
-crossed threshold. TorchXRayVision (Cohen et al.) ships DenseNet-121 weights trained on the
-*union* of NIH ChestX-ray14 + CheXpert + MIMIC-CXR + PadChest, with calibrated multi-label
-outputs that actually fire on true pathology. We wrap it as an `ExpertModel` — same contract
-as every other expert — so the router/orchestrator use it unchanged:
+crossed threshold. TorchXRayVision (Cohen et al.) ships DenseNet-121 weights trained on
+several different combinations of NIH ChestX-ray14 + CheXpert + MIMIC-CXR + PadChest, with
+calibrated multi-label outputs that actually fire on true pathology. We wrap it as an
+`ExpertModel` — same contract as every other expert — so the router/orchestrator use it
+unchanged:
 
-  * `predict(scan)` runs the pretrained net and fills `Prediction.class_probs` with the
+  * `predict(scan)` runs the pretrained net(s) and fills `Prediction.class_probs` with the
     subset of TorchXRayVision's pathologies that match our ChestX-ray14 vocabulary. The
     pipeline's threshold step turns those scores into `Finding`s — no custom hook needed.
 
@@ -15,6 +16,21 @@ Nothing here is trained; it is a deploy-and-go expert. Like the other adapters, 
 deps (`torchxrayvision`, `torch`) import lazily, so importing this module stays cheap
 offline. Weights download once from the TorchXRayVision release and are cached locally — no
 API, no network at inference (the project rule: local weights only).
+
+Ensembling: `weights` takes *either* a single string (one model) or a sequence of them
+(loads each, averages their op-norm-calibrated scores per pathology) — the machinery exists
+because it's a real, correct technique. But don't reach for it by default: measured on 300
+real NIH ChestX-ray14 test images (scripts/eval_chest_xrv.py), plain "all" alone scored
+0.7582 macro AUC, and every ensemble beat it by "all" scored *worse* than "all" alone —
+"all+nih" 0.7558 (a wash), "all+nih+chex" 0.7327, "nih" alone 0.7325, "chex" alone 0.5960.
+Two reasons this "free win" doesn't materialize here: "all" is trained on the *union*
+including nih and chex, so adding those checkpoints back in isn't an independent second
+opinion, just diluted noise; and "chex" alone is missing several NIH pathologies from its
+own label vocabulary entirely (Fibrosis/Infiltration/Mass/Nodule/Pleural_Thickening came
+back at exactly 0.5 AUC — a flat, uncalibrated score), so folding it in actively hurts.
+Re-run that eval script before trusting an ensemble config again — this result is specific
+to NIH-sourced test images and torchxrayvision's specific per-dataset checkpoints, not a
+general "ensembling doesn't work" claim.
 """
 
 from __future__ import annotations
@@ -28,21 +44,20 @@ from .chest_xray import CHESTXRAY14_LABELS
 
 
 class TorchXRayVisionExpert:
-    """Pretrained TorchXRayVision DenseNet as a routable (XRAY, CHEST) classifier.
+    """Pretrained TorchXRayVision DenseNet(s) as a routable (XRAY, CHEST) classifier.
 
-    `weights="densenet121-res224-all"` is the model trained on every public dataset at once
-    — the most robust default. Register it under (XRAY, CHEST) — alongside the trained
-    classifier if you want both, the router returns both and their findings pool. The model
-    loads lazily on the first `predict` (GPU used when available, but it's small enough for
-    CPU). Outputs are mapped to `labels` (default: the ChestX-ray14 14) so guidelines and the
-    verifier key off the same vocabulary as the rest of the system.
+    Register it under (XRAY, CHEST) — alongside the trained classifier if you want both, the
+    router returns both and their findings pool. Model(s) load lazily on the first `predict`
+    (GPU used when available, but small enough for CPU). Outputs are mapped to `labels`
+    (default: the ChestX-ray14 14) so guidelines and the verifier key off the same vocabulary
+    as the rest of the system.
     """
 
     def __init__(
         self,
         *,
         name: str = "chest_xrv",
-        weights: str = "densenet121-res224-all",
+        weights: str | Sequence[str] = "densenet121-res224-all",
         labels: Sequence[str] = CHESTXRAY14_LABELS,
         resolution: int = 224,
         device: str | None = None,
@@ -50,21 +65,23 @@ class TorchXRayVisionExpert:
         self.name = name
         self.modality = Modality.XRAY
         self.body_part = BodyPart.CHEST
-        self.weights = weights
+        self.weights: tuple[str, ...] = (weights,) if isinstance(weights, str) else tuple(weights)
         self.resolution = int(resolution)
         self.device = device
         # Advertised vocabulary (the verifier's "named-but-not-present" check keys off this).
         self.class_names: list[str] = list(labels)
-        self._model = None
+        self._models: list = []
 
     def _ensure_loaded(self) -> None:
-        if self._model is not None:
+        if self._models:
             return
         import torch
         import torchxrayvision as xrv
 
         device = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self._model = xrv.models.DenseNet(weights=self.weights).eval().to(device)
+        self._models = [
+            xrv.models.DenseNet(weights=w).eval().to(device) for w in self.weights
+        ]
         self.device = device
 
     def _preprocess(self, data):
@@ -98,28 +115,44 @@ class TorchXRayVisionExpert:
 
         self._ensure_loaded()
         x = self._preprocess(scan.data)
-        with torch.no_grad():
-            raw = self._model(x).detach().float().cpu()  # (1, n_path), sigmoid probs
-        # xrv applies the sigmoid in its forward; guard a weights variant that doesn't.
-        if float(raw.min()) < 0.0 or float(raw.max()) > 1.0:
-            raw = torch.sigmoid(raw)
 
-        # RAW xrv scores are NOT comparable across pathologies — each has its own operating
-        # point (model.op_threshs), so a flat threshold over-calls wildly (a normal study
-        # lights up because everything clusters near 0.5). op_norm remaps each score through
-        # its operating point so 0.5 == the calibrated decision boundary; then one pipeline
-        # threshold is meaningful and normals stay quiet while true findings still cross.
-        op = getattr(self._model, "op_threshs", None)
-        if op is not None:
-            op = op.detach().float().cpu()
-            scores = xrv.models.op_norm(raw, op)[0]
-            # Pathologies xrv never calibrated come back as a neutral 0.5; don't let that
-            # trip the threshold — treat "uncalibrated" as "not reported".
-            scores = torch.where(torch.isnan(op), torch.zeros_like(scores), scores)
-        else:
-            scores = raw[0]
+        # Sum calibrated per-pathology scores across the ensemble, dividing by how many
+        # models actually calibrated that pathology (not len(self._models)) — a weight set
+        # that never saw a label shouldn't dilute the average toward zero for it.
+        sums: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        for model in self._models:
+            with torch.no_grad():
+                raw = model(x).detach().float().cpu()  # (1, n_path), sigmoid probs
+            # xrv applies the sigmoid in its forward; guard a weights variant that doesn't.
+            if float(raw.min()) < 0.0 or float(raw.max()) > 1.0:
+                raw = torch.sigmoid(raw)
 
-        by_path = {p: float(v) for p, v in zip(self._model.pathologies, scores) if p}
+            # RAW xrv scores are NOT comparable across pathologies — each has its own
+            # operating point (model.op_threshs), so a flat threshold over-calls wildly (a
+            # normal study lights up because everything clusters near 0.5). op_norm remaps
+            # each score through its operating point so 0.5 == the calibrated decision
+            # boundary; then one pipeline threshold is meaningful and normals stay quiet
+            # while true findings still cross.
+            op = getattr(model, "op_threshs", None)
+            if op is not None:
+                op = op.detach().float().cpu()
+                scores = xrv.models.op_norm(raw, op)[0]
+                uncalibrated = torch.isnan(op)
+            else:
+                scores = raw[0]
+                uncalibrated = torch.zeros_like(scores, dtype=torch.bool)
+
+            for i, path in enumerate(model.pathologies):
+                # Pathologies this weight set never calibrated come back as a neutral 0.5 —
+                # exclude them from this model's contribution rather than average them in
+                # as "not reported"; another weight set in the ensemble may still cover it.
+                if not path or bool(uncalibrated[i]):
+                    continue
+                sums[path] = sums.get(path, 0.0) + float(scores[i])
+                counts[path] = counts.get(path, 0) + 1
+
+        by_path = {p: sums[p] / counts[p] for p in sums}
 
         pred = Prediction(expert=self.name, meta=scan.meta)
         pred.class_probs = {lbl: by_path[lbl] for lbl in self.class_names if lbl in by_path}

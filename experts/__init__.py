@@ -17,6 +17,7 @@ from routing import ExpertRegistry
 from .chest_xray import CHESTXRAY14_LABELS, build_chest_xray_expert
 from .ct_totalsegmentator import TotalSegmentatorExpert
 from .maira2 import Maira2Expert
+from .msk_fracture import MSKFractureExpert
 from .torchxrayvision import TorchXRayVisionExpert
 
 __all__ = [
@@ -25,6 +26,7 @@ __all__ = [
     "TotalSegmentatorExpert",
     "Maira2Expert",
     "TorchXRayVisionExpert",
+    "MSKFractureExpert",
     "build_default_registry",
 ]
 
@@ -35,8 +37,10 @@ def build_default_registry(
     include_xrv: bool = False,
     include_maira2: bool = False,
     include_ct: bool = False,
+    include_msk: bool = False,
     xrv_kwargs: dict | None = None,
     ct_kwargs: dict | None = None,
+    msk_kwargs: dict | None = None,
 ) -> ExpertRegistry:
     """Assemble an `ExpertRegistry` from the experts you want active.
 
@@ -46,7 +50,9 @@ def build_default_registry(
     alongside `chest_expert` and the router returns both so their findings pool. Set
     `include_maira2` to also register MAIRA-2 under (XRAY, CHEST). `include_ct` registers one
     TotalSegmentator instance under both CT niches (chest and abdomen) via `register_niche`,
-    since one set of weights serves both. Heavy adapters are constructed only when requested.
+    since one set of weights serves both. `include_msk` registers the pretrained YOLOv8
+    wrist-fracture detector under (XRAY, BONE). Heavy adapters are constructed only when
+    requested.
     """
     registry = ExpertRegistry()
 
@@ -60,5 +66,7 @@ def build_default_registry(
         ct = TotalSegmentatorExpert(**(ct_kwargs or {}))
         registry.register_niche(Modality.CT, BodyPart.CHEST, ct)
         registry.register_niche(Modality.CT, BodyPart.ABDOMEN, ct)
+    if include_msk:
+        registry.register(MSKFractureExpert(**(msk_kwargs or {})))
 
     return registry
