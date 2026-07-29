@@ -82,7 +82,8 @@ KAD512_IMAGENET_MEAN: tuple[float, float, float] = (0.485, 0.456, 0.406)
 KAD512_IMAGENET_STD: tuple[float, float, float] = (0.229, 0.224, 0.225)
 
 _QUERY_PACK_FORMAT = "doctor_assistant.kad512.query_pack"
-_QUERY_PACK_VERSION = 2
+_QUERY_PACK_VERSION = 3
+_TEXT_FEATURE_CANONICALIZATION = "torch_bfloat16_roundtrip_then_float32_v1"
 
 
 class KADCheckpointError(RuntimeError):
@@ -726,7 +727,12 @@ def build_kad512_query_pack(
     sections = preflight_kad512_checkpoint(checkpoint)
     labels = tuple(str(value) for value in labels)
     prompts = tuple(str(value) for value in prompts)
-    features = torch.as_tensor(text_features).detach().float().cpu()
+    raw_features = torch.as_tensor(text_features).detach().float().cpu()
+    # CPU kernels and prompt batch size can change the last few float32 bits of
+    # Med-KEBERT output.  Canonicalize the frozen query once at BF16 precision,
+    # then store float32 values for the decoder.  This is far below the model's
+    # effective precision but makes independently exported packs byte-identical.
+    features = raw_features.to(torch.bfloat16).to(torch.float32)
     if not labels or len(labels) != len(prompts):
         raise KADCheckpointError("KAD query-pack labels and prompts must be non-empty and aligned.")
     if features.shape != (len(prompts), KAD512_EMBED_DIM):
@@ -740,6 +746,7 @@ def build_kad512_query_pack(
     return {
         "format": _QUERY_PACK_FORMAT,
         "format_version": _QUERY_PACK_VERSION,
+        "text_feature_canonicalization": _TEXT_FEATURE_CANONICALIZATION,
         "image_encoder": sections["image_encoder"],
         "model": sections["model"],
         "text_features": features,
@@ -768,7 +775,15 @@ def preflight_kad512_query_pack(pack: Any) -> dict[str, Any]:
         )
     missing = [
         key
-        for key in ("image_encoder", "model", "text_features", "labels", "prompts", "preprocess")
+        for key in (
+            "image_encoder",
+            "model",
+            "text_features",
+            "labels",
+            "prompts",
+            "preprocess",
+            "text_feature_canonicalization",
+        )
         if key not in pack
     ]
     if missing:
@@ -828,6 +843,11 @@ def preflight_kad512_query_pack(pack: Any) -> dict[str, Any]:
             "KAD query-pack preprocessing metadata does not match this adapter's "
             "512px RGB/ImageNet preprocessing."
         )
+    if pack["text_feature_canonicalization"] != _TEXT_FEATURE_CANONICALIZATION:
+        raise KADCheckpointError(
+            "KAD query-pack text-feature canonicalization does not match this "
+            "adapter's reproducible export contract."
+        )
     source = pack.get("source", {})
     if not isinstance(source, Mapping):
         raise KADCheckpointError("KAD query-pack source metadata must be a mapping.")
@@ -868,6 +888,9 @@ def kad512_query_pack_semantic_sha256(pack: Any) -> str:
     metadata = {
         "format": checked["format"],
         "format_version": checked["format_version"],
+        "text_feature_canonicalization": checked[
+            "text_feature_canonicalization"
+        ],
         "labels": checked["labels"],
         "prompts": checked["prompts"],
         "preprocess": checked["preprocess"],

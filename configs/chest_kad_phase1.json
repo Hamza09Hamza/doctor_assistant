@@ -10,8 +10,9 @@
     "checkpoint_google_drive_file_id": "1nPPs-jWp5gNR5QjXgbnwFNUGygbC3vKI",
     "checkpoint_bytes": 1990875399,
     "checkpoint_sha256": "eb7223657220aa51eef43b2e155fd73c593eb5821fdcc8741782f6581ddfea76",
-    "phase1_query_pack_format_version": 2,
+    "phase1_query_pack_format_version": 3,
     "phase1_query_context": "one_query_per_endpoint",
+    "text_feature_canonicalization": "torch_bfloat16_roundtrip_then_float32_v1",
     "bert_model_id": "xmcmic/Med-KEBERT",
     "bert_model_revision": "3e877eb9119224b81eaffe13839cd93f073cfc37",
     "query_export_transformers_version": "5.12.1",
@@ -24,21 +25,21 @@
       "label": "Pneumothorax",
       "prompt": "pneumothorax",
       "query_set": "doctor_assistant.phase1.pneumothorax.v1",
-      "query_pack_semantic_sha256": "ef46e5e8c1caa7ff0583dea2234e41d507b51a734fcda6e6998a97db26b18211",
+      "query_pack_semantic_sha256": "07f9ed5ec200428c5a4e3701c61fcbdc326bd152dde300da4fbffbbc1d11b87c",
       "priority": 1
     },
     {
       "label": "Nodule_or_mass",
       "prompt": "lung nodule or mass",
       "query_set": "doctor_assistant.phase1.nodule_or_mass.v1",
-      "query_pack_semantic_sha256": "4c0796fff42dc53a20d35bf9a69a78424745b5908d8b3f27bcf45297ec079943",
+      "query_pack_semantic_sha256": "691850b79e133ed78b235f4dcfd81947dd9ac1993026bdea06a5a85faec2acd2",
       "priority": 2
     },
     {
       "label": "Airspace_opacity",
       "prompt": "airspace opacity",
       "query_set": "doctor_assistant.phase1.airspace_opacity.v1",
-      "query_pack_semantic_sha256": "d9ed9745d520bb98e9070a887c36bd4f8e1fe1abe577e53166643feef3ae9c16",
+      "query_pack_semantic_sha256": "b663a14cec6e4ce37829cecedbb6ed0ea406b64ff7c4cfcc5f35b39fff31ed5f",
       "priority": 3
     }
   ],

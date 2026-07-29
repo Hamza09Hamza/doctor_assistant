@@ -238,6 +238,32 @@ class KADComponentTests(unittest.TestCase):
                 prompts=("a", "b"),
             )
 
+    def test_query_pack_canonicalizes_last_bit_text_encoder_differences(self) -> None:
+        base_features = torch.full((1, KAD512_EMBED_DIM), 0.123456)
+        first = build_kad512_query_pack(
+            self.checkpoint,
+            text_features=base_features,
+            labels=("A",),
+            prompts=("a",),
+        )
+        second = build_kad512_query_pack(
+            self.checkpoint,
+            text_features=base_features + 1e-7,
+            labels=("A",),
+            prompts=("a",),
+        )
+
+        self.assertEqual(first["format_version"], 3)
+        self.assertEqual(
+            first["text_feature_canonicalization"],
+            "torch_bfloat16_roundtrip_then_float32_v1",
+        )
+        self.assertTrue(torch.equal(first["text_features"], second["text_features"]))
+        self.assertEqual(
+            kad512_query_pack_semantic_sha256(first),
+            kad512_query_pack_semantic_sha256(second),
+        )
+
     def test_query_pack_semantic_hash_ignores_only_local_checkpoint_path(self) -> None:
         base = build_kad512_query_pack(
             self.checkpoint,

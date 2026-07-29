@@ -180,6 +180,11 @@ original pixels and binds their hashes into the test lock.
   one frozen text-query embedding, prompt, preprocessing contract, checkpoint
   hash, and code revision. The BERT knowledge encoder is not needed for normal
   image inference after query embeddings have been produced once.
+- Canonicalize the exported text embedding through a BF16 round trip and store
+  the resulting values as float32. Med-KEBERT CPU kernels can otherwise differ
+  in the last float32 bits across prompt batch sizes or runtimes, making an
+  exact semantic hash reject numerically equivalent exports. Query-pack format
+  v3 binds this canonicalization contract.
 
 The current Colab notebook implements this zero-shot evaluation and fail-closed
 decision analysis. It does not implement Gate 0 training or Gate 2 adaptation.

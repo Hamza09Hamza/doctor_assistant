@@ -47,21 +47,21 @@ PHASE1_QUERY_SPECS: dict[str, dict[str, str]] = {
         "prompt": "pneumothorax",
         "query_set": "doctor_assistant.phase1.pneumothorax.v1",
         "semantic_sha256": (
-            "ef46e5e8c1caa7ff0583dea2234e41d507b51a734fcda6e6998a97db26b18211"
+            "07f9ed5ec200428c5a4e3701c61fcbdc326bd152dde300da4fbffbbc1d11b87c"
         ),
     },
     "Nodule_or_mass": {
         "prompt": "lung nodule or mass",
         "query_set": "doctor_assistant.phase1.nodule_or_mass.v1",
         "semantic_sha256": (
-            "4c0796fff42dc53a20d35bf9a69a78424745b5908d8b3f27bcf45297ec079943"
+            "691850b79e133ed78b235f4dcfd81947dd9ac1993026bdea06a5a85faec2acd2"
         ),
     },
     "Airspace_opacity": {
         "prompt": "airspace opacity",
         "query_set": "doctor_assistant.phase1.airspace_opacity.v1",
         "semantic_sha256": (
-            "d9ed9745d520bb98e9070a887c36bd4f8e1fe1abe577e53166643feef3ae9c16"
+            "b663a14cec6e4ce37829cecedbb6ed0ea406b64ff7c4cfcc5f35b39fff31ed5f"
         ),
     },
 }
