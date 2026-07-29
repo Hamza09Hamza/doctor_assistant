@@ -58,6 +58,11 @@ MIRROR_SPLIT_ROWS: Mapping[str, int] = {
     "validation": 8_557,
     "test": 25_596,
 }
+MIRROR_SPLIT_SHARDS: Mapping[str, int] = {
+    "train": 12,
+    "validation": 12,
+    "test": 12,
+}
 DATASET_SERVER = "https://datasets-server.huggingface.co"
 HUGGING_FACE = "https://huggingface.co"
 EXPECTED_IMAGE_SIZE = (320, 320)
@@ -68,6 +73,7 @@ _MAX_JSON_BYTES = 32 * 1024 * 1024
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _FILTER_BATCH_SIZE = 40
 _VIEWER_BUCKET_SIZE = 100
+_MAX_VIEWER_WORKERS = 2
 _DEVELOPMENT_WARNING = (
     "DEVELOPMENT ONLY — NOT OFFICIAL/FINAL EVIDENCE. These files are 320x320 "
     "third-party JPEG re-encodes converted to PNG, not original NIH image pixels."
@@ -186,10 +192,21 @@ def load_canonical_manifest(
 def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
     if retry_after:
         try:
-            return min(max(float(retry_after), 0.0), 60.0)
+            return min(max(float(retry_after), 0.0), 310.0)
         except ValueError:
             pass
     return min(2.0 ** attempt, 30.0) + random.uniform(0.0, 0.25)
+
+
+def _rate_limit_reset_seconds(headers: Mapping[str, str]) -> str | None:
+    retry_after = headers.get("Retry-After")
+    if retry_after:
+        return retry_after
+    rate_limit = headers.get("RateLimit", "")
+    match = re.search(r"(?:^|[;,])\s*t=(\d+)", rate_limit)
+    if match:
+        return str(int(match.group(1)) + 1)
+    return None
 
 
 def _request_bytes(
@@ -203,9 +220,19 @@ def _request_bytes(
 ) -> tuple[bytes, Mapping[str, str]]:
     last_error: BaseException | None = None
     for attempt in range(attempts):
+        headers = {
+            "User-Agent": _USER_AGENT,
+            "Accept-Encoding": "identity",
+        }
+        token = os.environ.get("HF_TOKEN")
+        if token and urllib.parse.urlsplit(url).hostname in {
+            "huggingface.co",
+            "datasets-server.huggingface.co",
+        }:
+            headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(
             url,
-            headers={"User-Agent": _USER_AGENT, "Accept-Encoding": "identity"},
+            headers=headers,
         )
         try:
             with opener(request, timeout=timeout) as response:
@@ -227,9 +254,28 @@ def _request_bytes(
                 return payload, dict(response.headers.items())
         except urllib.error.HTTPError as error:
             last_error = error
+            error_headers = error.headers
+            error.close()
             if error.code not in _RETRYABLE_STATUS or attempt + 1 >= attempts:
                 break
-            sleep(_retry_delay(attempt, error.headers.get("Retry-After")))
+            retry_after = (
+                _rate_limit_reset_seconds(error_headers)
+                if error.code == 429
+                else error_headers.get("Retry-After")
+            )
+            if error.code == 429 and retry_after is None:
+                # Hugging Face uses five-minute rate-limit windows. Dataset
+                # viewer responses do not always include the standard reset
+                # header, so wait through one complete anonymous window.
+                retry_after = "310"
+            delay = _retry_delay(attempt, retry_after)
+            if error.code == 429:
+                print(
+                    "Hugging Face rate limit reached; preserving completed "
+                    f"downloads and retrying in {delay:.0f}s",
+                    flush=True,
+                )
+            sleep(delay)
         except (OSError, TimeoutError, urllib.error.URLError) as error:
             last_error = error
             if attempt + 1 >= attempts:
@@ -244,7 +290,7 @@ def _get_json(
     endpoint: str,
     params: Mapping[str, object] | None = None,
     *,
-    attempts: int = 6,
+    attempts: int = 20,
     timeout: float = 60.0,
     request_bytes: Callable[..., tuple[bytes, Mapping[str, str]]] = _request_bytes,
 ) -> Mapping[str, Any]:
@@ -386,14 +432,11 @@ def scan_filename_column_locations(
     """Project only ``filename`` from remote Parquet and map target row indices."""
 
     if loader is None:
-        try:
-            from datasets import load_dataset
-        except ImportError as error:
-            raise ExpertImageFetchError(
-                "the filename-only fallback requires `datasets`; install "
-                "`datasets>=2.18` and `huggingface_hub>=0.23`"
-            ) from error
-        loader = load_dataset
+        return scan_pinned_parquet_filename_locations(
+            targets,
+            revision=revision,
+            expected_split_rows=expected_split_rows,
+        )
 
     by_name = {target.filename: target for target in targets}
     required_splits = sorted(
@@ -465,6 +508,124 @@ def scan_filename_column_locations(
             raise ExpertImageFetchError(
                 f"filename-only scan of mirror split {split!r} yielded {count:,} "
                 f"rows, expected {expected:,}; refusing a truncated/reordered source"
+            )
+
+    missing = set(by_name) - set(found)
+    if missing:
+        examples = ", ".join(sorted(missing)[:5])
+        raise ExpertImageFetchError(
+            f"filename-preserving mirror is missing {len(missing)} requested "
+            f"expert image(s), including: {examples}"
+        )
+    return tuple(found[name] for name in sorted(found))
+
+
+def _read_pinned_parquet_filename_shard(
+    split: str,
+    shard_index: int,
+    shard_count: int,
+    *,
+    revision: str,
+) -> tuple[str, ...]:
+    """Read one pinned shard's filename column without decoding image bytes."""
+
+    try:
+        from huggingface_hub import HfFileSystem
+        import pyarrow.parquet as parquet
+    except ImportError as error:
+        raise ExpertImageFetchError(
+            "the pinned filename fallback requires `huggingface_hub` and "
+            "`pyarrow`; install the notebook dependencies before retrying"
+        ) from error
+    path = (
+        f"datasets/{MIRROR_DATASET}@{revision}/data/"
+        f"{split}-{shard_index:05d}-of-{shard_count:05d}.parquet"
+    )
+    try:
+        filesystem = HfFileSystem()
+        with filesystem.open(path, "rb") as handle:
+            table = parquet.ParquetFile(handle).read(columns=["filename"])
+        values = table.column("filename").to_pylist()
+    except Exception as error:
+        raise ExpertImageFetchError(
+            f"could not read pinned filename column from {path}: {error}"
+        ) from error
+    if not all(isinstance(value, str) for value in values):
+        raise ExpertImageFetchError(
+            f"pinned filename column in {path} contains non-text values"
+        )
+    return tuple(values)
+
+
+def scan_pinned_parquet_filename_locations(
+    targets: Sequence[ManifestTarget],
+    *,
+    revision: str = MIRROR_REVISION,
+    expected_split_rows: Mapping[str, int] = MIRROR_SPLIT_ROWS,
+    split_shards: Mapping[str, int] = MIRROR_SPLIT_SHARDS,
+    shard_reader: Callable[..., Sequence[str]] = (
+        _read_pinned_parquet_filename_shard
+    ),
+) -> tuple[MirrorLocation, ...]:
+    """Map targets from pinned Parquet filename columns using HTTP range reads.
+
+    This avoids ``datasets`` streaming, which can spend minutes traversing the
+    image-bearing Parquet dataset even after selecting only ``filename``.
+    """
+
+    by_name = {target.filename: target for target in targets}
+    required_splits = sorted(
+        {
+            split
+            for target in targets
+            for split in target.candidate_mirror_splits
+        }
+    )
+    found: dict[str, MirrorLocation] = {}
+    for split in required_splits:
+        shard_count = split_shards.get(split)
+        if not isinstance(shard_count, int) or shard_count < 1:
+            raise ExpertImageFetchError(
+                f"no pinned Parquet shard count is defined for split {split!r}"
+            )
+        eligible = {
+            target.filename
+            for target in targets
+            if split in target.candidate_mirror_splits
+        }
+        row_offset = 0
+        for shard_index in range(shard_count):
+            names = shard_reader(
+                split,
+                shard_index,
+                shard_count,
+                revision=revision,
+            )
+            for local_index, raw_filename in enumerate(names):
+                if raw_filename not in eligible:
+                    continue
+                filename = _canonical_nih_filename(raw_filename)
+                if filename in found:
+                    previous = found[filename]
+                    raise ExpertImageFetchError(
+                        f"mirror target {filename!r} appears in both "
+                        f"{previous.mirror_split}:{previous.row_index} and "
+                        f"{split}:{row_offset + local_index}"
+                    )
+                target = by_name[filename]
+                found[filename] = MirrorLocation(
+                    filename=filename,
+                    expert_split=target.expert_split,
+                    mirror_split=split,
+                    row_index=row_offset + local_index,
+                )
+            row_offset += len(names)
+        expected = expected_split_rows.get(split)
+        if expected is not None and row_offset != expected:
+            raise ExpertImageFetchError(
+                f"pinned filename scan of mirror split {split!r} yielded "
+                f"{row_offset:,} rows, expected {expected:,}; refusing a "
+                "truncated/reordered source"
             )
 
     missing = set(by_name) - set(found)
@@ -585,7 +746,11 @@ def resolve_locations(
             )
     if locations is None:
         locations = scan_filename_column_locations(targets, loader=loader)
-        method = "projected_parquet_filename_column"
+        method = (
+            "projected_parquet_filename_column"
+            if loader is not None
+            else "pinned_parquet_filename_columns"
+        )
 
     _atomic_json(
         cache_path,
@@ -914,7 +1079,8 @@ def fetch_expert_images(
 
     buckets = _bucket_locations(pending_locations)
     futures: dict[Future[tuple[Mapping[str, Any], ...]], tuple[str, int]] = {}
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    viewer_workers = min(workers, _MAX_VIEWER_WORKERS)
+    with ThreadPoolExecutor(max_workers=viewer_workers) as executor:
         for (split, offset), bucket_locations in buckets.items():
             future = executor.submit(
                 _fetch_viewer_bucket,
@@ -1004,6 +1170,8 @@ def fetch_expert_images(
             "parquet_fallback_projects_columns": ["filename"],
             "viewer_bucket_size": _VIEWER_BUCKET_SIZE,
             "viewer_buckets_requested": len(buckets),
+            "viewer_workers_requested": workers,
+            "viewer_workers_effective": viewer_workers,
         },
         "validation": {
             "expected_dimensions": list(EXPECTED_IMAGE_SIZE),

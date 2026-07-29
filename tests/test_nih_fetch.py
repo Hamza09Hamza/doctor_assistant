@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+import urllib.error
 
 from PIL import Image
 
@@ -135,6 +136,157 @@ class NIHMetadataFetchTests(unittest.TestCase):
 
 
 class NIHExpertImageFetchTests(unittest.TestCase):
+    def test_colab_notebook_uses_resumable_authenticated_fetch_dependencies(
+        self,
+    ) -> None:
+        notebook_path = (
+            Path(__file__).resolve().parents[1]
+            / "notebooks"
+            / "chest_classifier_build_colab.ipynb"
+        )
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        source = "\n".join(
+            "".join(cell.get("source", [])) for cell in notebook["cells"]
+        )
+
+        self.assertIn('userdata.get("HF_TOKEN")', source)
+        self.assertIn('"numpy==2.0.2"', source)
+        self.assertIn('"pandas==2.2.2"', source)
+        self.assertIn('"pyarrow>=15,<24"', source)
+
+    def test_rate_limit_header_waits_for_reset_before_retrying(self) -> None:
+        attempts = 0
+        sleeps: list[float] = []
+
+        def opener(*_: object, **__: object):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise urllib.error.HTTPError(
+                    "https://example.invalid",
+                    429,
+                    "Too Many Requests",
+                    {"RateLimit": '"api";r=0;t=7'},
+                    None,
+                )
+
+            class Response:
+                status = 200
+                headers = {"Content-Length": "2"}
+
+                def getcode(self) -> int:
+                    return 200
+
+                def read(self, _: int) -> bytes:
+                    return b"ok"
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_: object) -> None:
+                    return None
+
+            return Response()
+
+        payload, _ = images._request_bytes(
+            "https://example.invalid",
+            max_bytes=10,
+            sleep=sleeps.append,
+            opener=opener,
+        )
+
+        self.assertEqual(payload, b"ok")
+        self.assertEqual(attempts, 2)
+        self.assertEqual(sleeps, [8.0])
+
+    def test_rate_limit_without_headers_waits_for_full_window(self) -> None:
+        attempts = 0
+        sleeps: list[float] = []
+
+        def opener(*_: object, **__: object):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise urllib.error.HTTPError(
+                    "https://example.invalid",
+                    429,
+                    "Too Many Requests",
+                    {},
+                    None,
+                )
+
+            class Response:
+                status = 200
+                headers = {"Content-Length": "2"}
+
+                def getcode(self) -> int:
+                    return 200
+
+                def read(self, _: int) -> bytes:
+                    return b"ok"
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_: object) -> None:
+                    return None
+
+            return Response()
+
+        payload, _ = images._request_bytes(
+            "https://example.invalid",
+            max_bytes=10,
+            sleep=sleeps.append,
+            opener=opener,
+        )
+
+        self.assertEqual(payload, b"ok")
+        self.assertEqual(sleeps, [310.0])
+
+    def test_pinned_parquet_fallback_maps_concatenated_shard_offsets(self) -> None:
+        targets = [
+            images.ManifestTarget(
+                filename="00000001_000.png", expert_split="validation"
+            ),
+            images.ManifestTarget(
+                filename="00000004_000.png", expert_split="validation"
+            ),
+        ]
+        shards = {
+            ("train", 0): ("00000001_000.png", "00000002_000.png"),
+            ("train", 1): ("00000003_000.png",),
+            ("validation", 0): ("00000004_000.png",),
+        }
+        calls: list[tuple[str, int, int, str]] = []
+
+        def reader(
+            split: str,
+            shard_index: int,
+            shard_count: int,
+            *,
+            revision: str,
+        ) -> tuple[str, ...]:
+            calls.append((split, shard_index, shard_count, revision))
+            return shards[(split, shard_index)]
+
+        locations = images.scan_pinned_parquet_filename_locations(
+            targets,
+            expected_split_rows={"train": 3, "validation": 1},
+            split_shards={"train": 2, "validation": 1},
+            shard_reader=reader,
+        )
+
+        by_name = {location.filename: location for location in locations}
+        self.assertEqual(by_name["00000001_000.png"].mirror_split, "train")
+        self.assertEqual(by_name["00000001_000.png"].row_index, 0)
+        self.assertEqual(
+            by_name["00000004_000.png"].mirror_split, "validation"
+        )
+        self.assertEqual(by_name["00000004_000.png"].row_index, 0)
+        self.assertTrue(
+            all(call[3] == images.MIRROR_REVISION for call in calls)
+        )
+
     def test_parquet_fallback_projects_after_loading_stream(self) -> None:
         target = images.ManifestTarget(
             filename="00000001_000.png", expert_split="validation"
@@ -261,7 +413,7 @@ class NIHExpertImageFetchTests(unittest.TestCase):
             result = images.fetch_expert_images(
                 manifest,
                 root / "images",
-                workers=1,
+                workers=8,
                 get_json=get_json,
                 request_bytes=request_bytes,
             )
@@ -285,6 +437,11 @@ class NIHExpertImageFetchTests(unittest.TestCase):
         self.assertFalse(saved["original_nih_pixels"])
         self.assertIn(images.MIRROR_REVISION, saved["source"])
         self.assertEqual(saved["validation"]["images"], 1)
+        self.assertEqual(result["lookup"]["viewer_workers_requested"], 8)
+        self.assertEqual(
+            result["lookup"]["viewer_workers_effective"],
+            images._MAX_VIEWER_WORKERS,
+        )
         self.assertEqual(row_requests, 1)
         self.assertEqual(asset_requests, 1)
         self.assertEqual(resumed["validation"]["downloaded_this_run"], 0)
