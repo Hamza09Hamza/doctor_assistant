@@ -1016,6 +1016,7 @@ def export_kad512_query_pack(
     checkpoint_path: str | Path,
     output_path: str | Path,
     *,
+    text_features: Tensor | None = None,
     bert_model_id: str = KAD512_BERT_MODEL_ID,
     bert_revision: str = KAD512_BERT_REVISION,
     tokenizer_id: str | None = None,
@@ -1028,7 +1029,12 @@ def export_kad512_query_pack(
     overwrite: bool = False,
     source_metadata: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Encode fixed queries once and save a lean, BERT-free KAD inference pack."""
+    """Save a lean, BERT-free KAD inference pack.
+
+    When ``text_features`` is supplied, it must contain the reviewed embeddings
+    for ``prompts`` and Med-KEBERT is not constructed. Otherwise the embeddings
+    are encoded from the checkpoint as before.
+    """
 
     destination = Path(output_path).expanduser()
     if destination.exists() and not overwrite:
@@ -1039,34 +1045,37 @@ def export_kad512_query_pack(
         description="KAD checkpoint",
         allow_unsafe_pickle=allow_unsafe_pickle,
     )
-    image_encoder = KADResNet512Encoder()
-    text_encoder = _build_hf_text_encoder(
-        bert_model_id,
-        revision=bert_revision,
-        local_files_only=local_files_only,
-    )
-    query_decoder = KADQueryDecoder()
-    load_kad512_checkpoint(
-        checkpoint,
-        image_encoder=image_encoder,
-        text_encoder=text_encoder,
-        query_decoder=query_decoder,
-    )
+    if text_features is None:
+        image_encoder = KADResNet512Encoder()
+        text_encoder = _build_hf_text_encoder(
+            bert_model_id,
+            revision=bert_revision,
+            local_files_only=local_files_only,
+        )
+        query_decoder = KADQueryDecoder()
+        load_kad512_checkpoint(
+            checkpoint,
+            image_encoder=image_encoder,
+            text_encoder=text_encoder,
+            query_decoder=query_decoder,
+        )
 
-    runtime_device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    text_encoder = text_encoder.eval().to(runtime_device)
-    tokenizer = _build_hf_tokenizer(
-        tokenizer_id or bert_model_id,
-        revision=bert_revision,
-        local_files_only=local_files_only,
-    )
-    text_features = _encode_prompts(
-        text_encoder,
-        tokenizer,
-        prompts,
-        max_length=max_length,
-        device=runtime_device,
-    )
+        runtime_device = torch.device(
+            device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        text_encoder = text_encoder.eval().to(runtime_device)
+        tokenizer = _build_hf_tokenizer(
+            tokenizer_id or bert_model_id,
+            revision=bert_revision,
+            local_files_only=local_files_only,
+        )
+        text_features = _encode_prompts(
+            text_encoder,
+            tokenizer,
+            prompts,
+            max_length=max_length,
+            device=runtime_device,
+        )
     source = {
         "kind": "official-kad-checkpoint",
         "checkpoint": str(Path(checkpoint_path).expanduser()),

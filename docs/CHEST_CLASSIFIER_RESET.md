@@ -185,6 +185,11 @@ original pixels and binds their hashes into the test lock.
   in the last float32 bits across prompt batch sizes or runtimes, making an
   exact semantic hash reject numerically equivalent exports. Query-pack format
   v3 binds this canonicalization contract.
+- Phase-1 export loads the three reviewed singleton embeddings from the
+  checksum-pinned `configs/chest_kad_phase1_query_features.json` asset. It does
+  not rerun Med-KEBERT, because CPU kernels can still land on opposite sides of
+  a BF16 rounding boundary across PyTorch/Colab runtimes. Med-KEBERT remains
+  available for the noncanonical NIH-14 smoke export.
 
 The current Colab notebook implements this zero-shot evaluation and fail-closed
 decision analysis. It does not implement Gate 0 training or Gate 2 adaptation.

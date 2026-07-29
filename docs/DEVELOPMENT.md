@@ -78,8 +78,10 @@ benchmark also enforces the active endpoint's canonical query-set ID and semanti
 query-pack hash; a multi-query pack or a pack containing different query tensors is
 rejected. This isolation is required because KAD decoder self-attention makes scores
 depend on every query present. Query-pack format v3 canonicalizes the frozen text
-embedding through a BF16 round trip before storing it as float32, preventing harmless
-last-bit CPU differences from breaking the semantic identity check. Canonical
+embedding through a BF16 round trip before storing it as float32. Canonical phase-1
+export reads the reviewed singleton embeddings from the checksum-pinned
+`configs/chest_kad_phase1_query_features.json` asset instead of recomputing them, so
+PyTorch and CPU-kernel differences cannot break the semantic identity check. Canonical
 benchmarking also requires a clean worktree and records the deterministic inference
 controls, GPU/CPU identity, compute capability, CUDA runtime, cuDNN runtime, and NVIDIA
 driver in its evidence artifact. The canonical Colab notebook requires a T4 rather than

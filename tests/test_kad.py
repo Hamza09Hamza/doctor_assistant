@@ -29,9 +29,11 @@ from experts.kad import (
     preprocess_kad512,
 )
 from scripts.export_kad_query_pack import (
+    PHASE1_FEATURES_SHA256,
     PHASE1_LABELS,
     PHASE1_PROMPTS,
     PHASE1_QUERY_SPECS,
+    load_phase1_query_features,
     main as export_query_pack_main,
 )
 
@@ -295,6 +297,23 @@ class KADComponentTests(unittest.TestCase):
 
 
 class KADQueryPackExporterTests(unittest.TestCase):
+    def test_canonical_phase1_features_are_checksum_pinned_and_aligned(self) -> None:
+        features = load_phase1_query_features()
+
+        self.assertEqual(tuple(features), PHASE1_LABELS)
+        self.assertEqual(
+            PHASE1_FEATURES_SHA256,
+            "54c74d20a5bcecab770ce6a0d84bc0b14caa40e798693d1af6bb0b022a4cf094",
+        )
+        for feature in features.values():
+            self.assertEqual(tuple(feature.shape), (1, KAD512_EMBED_DIM))
+            self.assertTrue(
+                torch.equal(
+                    feature,
+                    feature.to(torch.bfloat16).to(torch.float32),
+                )
+            )
+
     def test_phase1_specs_are_aligned_and_have_stable_endpoint_ids(self) -> None:
         self.assertEqual(tuple(PHASE1_QUERY_SPECS), PHASE1_LABELS)
         self.assertEqual(
@@ -386,6 +405,12 @@ class KADQueryPackExporterTests(unittest.TestCase):
                 call = export_pack.call_args
                 self.assertEqual(call.kwargs["labels"], (target,))
                 self.assertEqual(call.kwargs["prompts"], (spec["prompt"],))
+                self.assertTrue(
+                    torch.equal(
+                        call.kwargs["text_features"],
+                        load_phase1_query_features()[target],
+                    )
+                )
                 self.assertEqual(
                     call.kwargs["source_metadata"]["query_set"],
                     spec["query_set"],
@@ -423,6 +448,7 @@ class KADQueryPackExporterTests(unittest.TestCase):
             call = export_pack.call_args
             self.assertEqual(call.kwargs["labels"], KAD512_LABELS)
             self.assertEqual(call.kwargs["prompts"], KAD512_PROMPTS)
+            self.assertIsNone(call.kwargs["text_features"])
             self.assertEqual(
                 call.kwargs["source_metadata"]["query_set"],
                 "doctor_assistant.nih14_smoke.v1",

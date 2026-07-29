@@ -13,6 +13,8 @@
     "phase1_query_pack_format_version": 3,
     "phase1_query_context": "one_query_per_endpoint",
     "text_feature_canonicalization": "torch_bfloat16_roundtrip_then_float32_v1",
+    "phase1_query_features_file": "configs/chest_kad_phase1_query_features.json",
+    "phase1_query_features_sha256": "54c74d20a5bcecab770ce6a0d84bc0b14caa40e798693d1af6bb0b022a4cf094",
     "bert_model_id": "xmcmic/Med-KEBERT",
     "bert_model_revision": "3e877eb9119224b81eaffe13839cd93f073cfc37",
     "query_export_transformers_version": "5.12.1",

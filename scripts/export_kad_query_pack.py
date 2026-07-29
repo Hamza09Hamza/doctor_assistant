@@ -14,10 +14,14 @@ trusted KAD-512 checkpoint already present on disk.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 from pathlib import Path
+import struct
 import sys
+
+import torch
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -26,6 +30,7 @@ if str(_REPO_ROOT) not in sys.path:
 from experts.kad import (
     KAD512_BERT_MODEL_ID,
     KAD512_BERT_REVISION,
+    KAD512_EMBED_DIM,
     KAD512_LABELS,
     KAD512_PROMPTS,
     export_kad512_query_pack,
@@ -41,6 +46,12 @@ PHASE1_PROMPTS: tuple[str, ...] = (
     "pneumothorax",
     "lung nodule or mass",
     "airspace opacity",
+)
+PHASE1_FEATURES_PATH = (
+    _REPO_ROOT / "configs" / "chest_kad_phase1_query_features.json"
+)
+PHASE1_FEATURES_SHA256 = (
+    "54c74d20a5bcecab770ce6a0d84bc0b14caa40e798693d1af6bb0b022a4cf094"
 )
 PHASE1_QUERY_SPECS: dict[str, dict[str, str]] = {
     "Pneumothorax": {
@@ -70,6 +81,69 @@ if tuple(PHASE1_QUERY_SPECS) != PHASE1_LABELS or tuple(
     spec["prompt"] for spec in PHASE1_QUERY_SPECS.values()
 ) != PHASE1_PROMPTS:
     raise RuntimeError("phase-1 query specs are not aligned with labels/prompts")
+
+
+def load_phase1_query_features(
+    path: str | Path = PHASE1_FEATURES_PATH,
+) -> dict[str, torch.Tensor]:
+    """Load the reviewed singleton embeddings without rerunning Med-KEBERT."""
+
+    resolved = Path(path)
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(
+            f"Could not read canonical phase-1 query features {resolved}: {exc}"
+        ) from exc
+    expected_metadata = {
+        "format": "doctor_assistant.kad512.phase1_query_features",
+        "format_version": 1,
+        "dtype": "float32",
+        "byte_order": "little",
+        "shape": [len(PHASE1_LABELS), KAD512_EMBED_DIM],
+        "labels": list(PHASE1_LABELS),
+        "prompts": list(PHASE1_PROMPTS),
+    }
+    for key, expected in expected_metadata.items():
+        if payload.get(key) != expected:
+            raise ValueError(
+                f"Canonical phase-1 query features have invalid {key}: "
+                f"expected {expected!r}, got {payload.get(key)!r}"
+            )
+    try:
+        raw = base64.b64decode(payload["data_base64"], validate=True)
+    except Exception as exc:
+        raise ValueError(
+            "Canonical phase-1 query features contain invalid base64 data"
+        ) from exc
+    actual_hash = hashlib.sha256(raw).hexdigest()
+    if (
+        payload.get("data_sha256") != PHASE1_FEATURES_SHA256
+        or actual_hash != PHASE1_FEATURES_SHA256
+    ):
+        raise ValueError(
+            "Canonical phase-1 query-feature bytes do not match the reviewed SHA-256"
+        )
+    value_count = len(PHASE1_LABELS) * KAD512_EMBED_DIM
+    if len(raw) != value_count * 4:
+        raise ValueError(
+            "Canonical phase-1 query-feature byte length does not match its shape"
+        )
+    values = struct.unpack(f"<{value_count}f", raw)
+    features = torch.tensor(values, dtype=torch.float32).reshape(
+        len(PHASE1_LABELS), KAD512_EMBED_DIM
+    )
+    if not torch.equal(
+        features,
+        features.to(torch.bfloat16).to(torch.float32),
+    ):
+        raise ValueError(
+            "Canonical phase-1 query features violate the BF16 round-trip contract"
+        )
+    return {
+        label: features[index : index + 1].clone()
+        for index, label in enumerate(PHASE1_LABELS)
+    }
 
 
 def sha256_file(path: str | Path, *, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -103,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=PHASE1_LABELS,
         help=(
             "required with --query-set phase1; selects the one endpoint query "
-            "placed in the pack"
+            "placed in the pack using its reviewed frozen embedding"
         ),
     )
     parser.add_argument("--device", default=None, help="for example cuda or cpu")
@@ -143,16 +217,19 @@ def main(argv: list[str] | None = None) -> int:
         labels = (args.active_target,)
         prompts = (spec["prompt"],)
         query_set_id = spec["query_set"]
+        text_features = load_phase1_query_features()[args.active_target]
     else:
         if args.active_target is not None:
             parser.error("--active-target is accepted only with --query-set phase1")
         labels, prompts = KAD512_LABELS, KAD512_PROMPTS
         query_set_id = "doctor_assistant.nih14_smoke.v1"
+        text_features = None
 
     checkpoint_hash = sha256_file(args.checkpoint)
     exported = export_kad512_query_pack(
         args.checkpoint,
         args.output,
+        text_features=text_features,
         bert_model_id=args.bert_model_id,
         bert_revision=args.bert_revision,
         tokenizer_id=args.tokenizer_id,

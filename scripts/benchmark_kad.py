@@ -1176,7 +1176,8 @@ def inspect_query_pack(
         if semantic_hash != expected_semantic_sha256:
             raise ValueError(
                 "KAD query pack semantic SHA-256 does not match the reviewed "
-                "canonical phase-1 query features"
+                "canonical phase-1 query features: "
+                f"expected {expected_semantic_sha256}, got {semantic_hash}"
             )
     del checked, raw
     gc.collect()
