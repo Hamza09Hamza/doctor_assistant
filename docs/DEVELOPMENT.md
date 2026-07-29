@@ -26,9 +26,27 @@ python scripts/smoke_system.py
 ```
 
 For classifier development in Google Colab, use
-`notebooks/classifier_evaluation_colab.ipynb`. It keeps validation analysis,
-threshold selection, and the final held-out test as separate explicit stages and saves
-the resulting JSON/NPZ artifacts to Google Drive.
+`notebooks/chest_classifier_build_colab.ipynb`. It evaluates the pinned KAD-512
+candidate against the adjudicated NIH development cohort, keeps only one endpoint under
+decision and one query in the model at a time, and saves hashed JSON/NPZ artifacts to a
+new immutable Google Drive
+directory for every run. It freezes four patient-disjoint roles: model selection (30%),
+calibration (20%), threshold selection (20%), and untouched acceptance (30%). Acceptance
+reports study-level sensitivity and specificity from one score-blind, deterministic
+SHA-256-selected positive study per positive patient and one negative study per negative
+patient. It gates on two-sided 95% Wilson bounds and requires at least 22 positive and
+20 negative acceptance patients; all-study metrics are diagnostic only. Its current
+320-pixel JPEG mirror is decision-ineligible: calibration and candidate-threshold
+outputs are diagnostic, and untouched-acceptance scores are not read at all. The
+acceptance stage requires a future trusted original-NIH pixel path. The historical
+`classifier_evaluation_colab.ipynb` is exploratory and must not be used as the evidence
+workflow.
+
+Role membership is endpoint-specific and frozen across all candidates with seed
+`20250729` and exactly 512 score-blind, label-support hash-search attempts. The
+canonical CLI rejects changes to either value. Endpoint-specific adaptation must start
+from the same frozen base; shared multi-endpoint encoder training requires a separate
+global role manifest and is not implemented.
 
 Real-data evaluation downloads public datasets and pretrained weights on first use:
 
@@ -42,8 +60,8 @@ several reporting thresholds: macro sensitivity, macro specificity, the fraction
 dataset-normal studies with any false-positive finding, and the mean number of findings
 per normal study. AUC alone is not evidence that `Pipeline(thresholds=...)` is safe.
 
-Per-label threshold selection uses validation patients and evaluates the frozen result
-once on separate test patients:
+The older TorchXRayVision threshold script explores named partitions from a third-party
+mirror:
 
 ```bash
 python scripts/calibrate_chest_thresholds.py \
@@ -51,17 +69,33 @@ python scripts/calibrate_chest_thresholds.py \
   --sensitivity-target 0.85 --specificity-floor 0.60
 ```
 
-The script refuses to export `pipeline_thresholds` when any label has inadequate
-validation support or cannot meet the declared constraints.
+Its outputs are smoke/development diagnostics, not official NIH validation or test
+evidence, because that mirror does not expose source filenames for manifest
+reconciliation. The KAD workflow instead uses `prepare_nih_expert_manifest.py`,
+`benchmark_kad.py`, and `calibrate_kad_phase1.py`; locked test mode remains disabled
+until original NIH pixels and a fully frozen decision artifact are supplied. The
+benchmark also enforces the active endpoint's canonical query-set ID and semantic
+query-pack hash; a multi-query pack or a pack containing different query tensors is
+rejected. This isolation is required because KAD decoder self-attention makes scores
+depend on every query present. Canonical
+benchmarking also requires a clean worktree and records the deterministic inference
+controls, GPU/CPU identity, compute capability, CUDA runtime, cuDNN runtime, and NVIDIA
+driver in its evidence artifact. The canonical Colab notebook requires a T4 rather than
+silently mixing T4, L4, and A100 evidence. NumPy, SciPy, scikit-learn, pandas,
+Pillow, and transformers are pinned in the notebook; the decision artifact separately
+hashes its calibration script and records the exact Python/NumPy/SciPy/scikit-learn
+versions.
 
-Completed artifacts can be loaded without copying values manually:
+Historical mirror artifacts deliberately set `threshold_export_eligible=false`,
+`thresholds_complete=false`, and `pipeline_thresholds=null`.
+`load_calibrated_thresholds(...)` rejects them even when every diagnostic candidate
+met its point-estimate constraints. No mirror-derived threshold may feed `Pipeline`.
 
-```python
-from evaluation import load_calibrated_thresholds
-
-thresholds = load_calibrated_thresholds("outputs/chest_xrv_thresholds.json")
-pipe = Pipeline(router, thresholds=thresholds)
-```
+The current image-provenance schema also rejects a self-authored
+`original_nih_pixels=true` declaration. A trusted original-NIH ingestion receipt that
+verifies archive/source identity, exact selected bytes, and the canonical manifest
+must be implemented before the original-pixel acceptance and locked-test paths can be
+enabled.
 
 Evaluation samples default to
 `~/.cache/doctor_assistant/evaluation`. Override this with either
@@ -88,7 +122,7 @@ clinical-format CT data with preserved geometry.
 ## What the checks establish
 
 - Unit tests establish software contracts such as routing safety, metadata isolation,
-  report grounding, split fallback, and checkpoint state.
+  report grounding, official-manifest fail-closed behavior, and checkpoint state.
 - Smoke tests establish that the components connect.
 - Real-data scripts measure a specific model/dataset/configuration combination.
 

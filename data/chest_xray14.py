@@ -25,6 +25,11 @@ import random
 from dataclasses import dataclass
 
 from .dataset import Sample
+from .nih_protocol import (
+    nih_patient_id,
+    read_nih_filename_manifest,
+    reconcile_nih_official_manifests,
+)
 
 # Official 14 pathology labels in consistent alphabetical order.
 # "No Finding" is excluded — when all 14 are 0 the vector already encodes it.
@@ -65,7 +70,20 @@ def load_chest_xray14(
     fold, preventing patient leakage. Pass `stratify=False` for a grouped random split,
     or `group_by_patient=False` only for a dataset whose filenames do not carry patient
     identity.
+
+    Both official manifests are mandatory. A third-party mirror partition named
+    ``valid`` or ``test`` is not accepted as evidence of NIH membership. Every CSV image
+    identity is reconciled against the official manifests before the requested split is
+    constructed, and official test images never participate in train/validation.
+
+    ``max_samples`` is applied only after all eligible local images are collected,
+    using a deterministic seed-based sample. It is therefore a smoke-run convenience,
+    not an ordered prefix of the source CSV.
     """
+    if not 0.0 < val_fraction < 1.0:
+        raise ValueError("val_fraction must be strictly between 0 and 1")
+    if max_samples is not None and max_samples <= 0:
+        raise ValueError("max_samples must be a positive integer or None")
     label_index = {l: i for i, l in enumerate(labels)}
     csv_path = os.path.join(root, "Data_Entry_2017.csv")
     image_dir = os.path.join(root, "images")
@@ -73,15 +91,14 @@ def load_chest_xray14(
 
     rows = _read_rows(csv_path)  # Image Index -> raw "Finding Labels" string, read once
     train_val_names, test_names = _load_split_files(root)
-    test_names &= set(rows)
-    if not train_val_names:
-        # Some mirrors omit NIH's official split text files. Preserve the documented
-        # fallback by treating CSV rows not explicitly assigned to test as
-        # train+validation data. Never invent a test partition.
-        train_val_names = set(rows) - test_names
-    else:
-        # Ignore stale split entries that have no matching CSV row.
-        train_val_names &= set(rows)
+    reconciliation = reconcile_nih_official_manifests(
+        rows,
+        train_val_names,
+        test_names,
+        require_complete=True,
+    )
+    train_val_names = set(reconciliation.available_train_val)
+    test_names = set(reconciliation.available_test)
 
     if split in ("train", "val"):
         if stratify:
@@ -119,15 +136,34 @@ def load_chest_xray14(
         if not os.path.isfile(path):
             continue  # skip missing files gracefully
         label_vec = _parse_labels(finding_str, label_index, len(labels))
-        samples.append(Sample(path=path, label=label_vec))
-        if max_samples is not None and len(samples) >= max_samples:
-            break
-
+        official_partition = "test" if name in test_names else "train_val"
+        provenance = (
+            "official_test_manifest"
+            if official_partition == "test"
+            else "patient_disjoint_development_split_from_official_train_val_manifest"
+        )
+        samples.append(
+            Sample(
+                path=path,
+                label=label_vec,
+                meta={
+                    "sample_id": name,
+                    "filename": name,
+                    "patient_id": nih_patient_id(name),
+                    "dataset": "NIH ChestX-ray14",
+                    "official_partition": official_partition,
+                    "split": split,
+                    "split_provenance": provenance,
+                },
+            )
+        )
     if not samples:
         raise RuntimeError(
             f"No samples found for split={split!r} in {root!r}. "
             "Check that images/ and Data_Entry_2017.csv are present."
         )
+    if max_samples is not None and len(samples) > max_samples:
+        samples = random.Random(seed).sample(samples, k=max_samples)
     return samples
 
 
@@ -159,7 +195,10 @@ def _read_rows(csv_path: str) -> dict[str, str]:
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            rows[row["Image Index"].strip()] = row["Finding Labels"]
+            name = row["Image Index"].strip()
+            if name in rows:
+                raise ValueError(f"duplicate Image Index in NIH CSV: {name}")
+            rows[name] = row["Finding Labels"]
     return rows
 
 
@@ -286,7 +325,7 @@ def _group_names(
 
 
 def _patient_id(name: str) -> str:
-    return os.path.basename(name).split("_", 1)[0]
+    return nih_patient_id(name)
 
 
 def _check_paths(csv_path: str, image_dir: str) -> None:
@@ -299,13 +338,16 @@ def _check_paths(csv_path: str, image_dir: str) -> None:
         raise FileNotFoundError(f"images/ directory not found: {image_dir}")
 
 
-def _load_split_files(root: str) -> tuple[set[str], set[str]]:
-    def _read(name: str) -> set[str]:
+def _load_split_files(root: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def _read(name: str) -> tuple[str, ...]:
         path = os.path.join(root, name)
         if not os.path.isfile(path):
-            return set()
-        with open(path) as f:
-            return {line.strip() for line in f if line.strip()}
+            raise FileNotFoundError(
+                f"Official NIH split manifest not found: {path}. "
+                "Both train_val_list.txt and test_list.txt are required; mirror "
+                "partition names are not a substitute."
+            )
+        return read_nih_filename_manifest(path)
 
     train_val = _read("train_val_list.txt")
     test = _read("test_list.txt")

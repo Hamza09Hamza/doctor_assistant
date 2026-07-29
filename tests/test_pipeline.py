@@ -56,6 +56,26 @@ class ObservingExpert:
         )
 
 
+class SegmentationExpert:
+    modality = Modality.XRAY
+    body_part = BodyPart.CHEST
+
+    def __init__(self, name: str, label: str, score: float | None) -> None:
+        self.name = name
+        self.label = label
+        self.score = score
+        self.class_names = [label]
+
+    def predict(self, scan):
+        class_probs = {} if self.score is None else {self.label: self.score}
+        return Prediction(
+            expert=self.name,
+            class_probs=class_probs,
+            segmentation=torch.ones(16, 16),
+            meta=scan.meta,
+        )
+
+
 class TinyBackbone(Backbone):
     def __init__(self) -> None:
         super().__init__()
@@ -158,6 +178,20 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(result.verification.ok, result.verification.summary())
         self.assertIn("Effusion", result.report.findings)
         self.assertNotIn("Pneumothorax", result.report.findings)
+
+    def test_segmentation_preserves_zero_score_and_leaves_missing_score_unknown(self) -> None:
+        registry = ExpertRegistry()
+        registry.register(SegmentationExpert("zero", "Lesion", 0.0))
+        registry.register(SegmentationExpert("unscored", "chest", None))
+        pipe = Pipeline(ModalityRouter(registry), reporter=Reporter(llm=None))
+
+        result = pipe.analyze_scan(_scan())
+
+        self.assertEqual([finding.probability for finding in result.findings], [0.0, None])
+        self.assertEqual(result.report.findings.lower().count("score"), 1)
+        self.assertIn("score 0.00", result.report.findings)
+        self.assertNotIn("score 1.00", result.report.findings)
+        self.assertTrue(result.verification.ok, result.verification.summary())
 
 
 if __name__ == "__main__":

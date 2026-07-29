@@ -32,7 +32,7 @@ class SelectThresholdScriptTests(unittest.TestCase):
         )
         return benchmark_path
 
-    def test_selects_from_validation_predictions(self):
+    def test_mirror_selection_is_diagnostic_and_not_pipeline_loadable(self):
         with tempfile.TemporaryDirectory() as raw:
             artifact = select_from_benchmark(
                 self._artifact(Path(raw)),
@@ -41,8 +41,14 @@ class SelectThresholdScriptTests(unittest.TestCase):
                 min_positives=2,
                 min_negatives=2,
             )
-        self.assertTrue(artifact["thresholds_complete"])
-        self.assertEqual(set(artifact["pipeline_thresholds"]), {"a", "b"})
+        self.assertTrue(artifact["diagnostic_selection_complete"])
+        self.assertEqual(
+            set(artifact["diagnostic_candidate_thresholds"]),
+            {"a", "b"},
+        )
+        self.assertFalse(artifact["threshold_export_eligible"])
+        self.assertFalse(artifact["thresholds_complete"])
+        self.assertIsNone(artifact["pipeline_thresholds"])
 
     def test_rejects_held_out_test_artifact(self):
         with tempfile.TemporaryDirectory() as raw:

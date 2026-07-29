@@ -74,6 +74,40 @@ class ThresholdSelectionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "incomplete"):
                 load_calibrated_thresholds(path)
 
+    def test_explicitly_ineligible_thresholds_cannot_be_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "thresholds.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "thresholds_complete": True,
+                        "threshold_export_eligible": False,
+                        "pipeline_thresholds": {"Finding": 0.25},
+                    }
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "not eligible"):
+                load_calibrated_thresholds(path)
+
+    def test_explicitly_eligible_thresholds_can_be_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "thresholds.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "thresholds_complete": True,
+                        "threshold_export_eligible": True,
+                        "eligible_as_official_nih_test_evidence": True,
+                        "dataset": {"official_nih_manifest_reconciled": True},
+                        "pipeline_thresholds": {"Finding": 0.25},
+                    }
+                )
+            )
+            self.assertEqual(
+                load_calibrated_thresholds(path),
+                {"Finding": 0.25},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

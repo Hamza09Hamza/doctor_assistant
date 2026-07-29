@@ -111,8 +111,9 @@ doctor_assistant/
 │   ├── smoke_report.py         # reporting-layer smoke checks
 │   └── smoke_system.py         # end-to-end system smoke checks
 └── notebooks/
-    ├── system_test.ipynb                 # mixed-scenario wiring notebook
-    └── classifier_evaluation_colab.ipynb # Colab model-evaluation workflow
+    ├── system_test.ipynb                    # mixed-scenario wiring notebook
+    ├── classifier_evaluation_colab.ipynb    # historical exploratory workflow
+    └── chest_classifier_build_colab.ipynb   # provenance-checked KAD workflow
 ```
 
 Some modules may change, move, or be replaced as the architecture is tested.
@@ -192,14 +193,50 @@ TotalSegmentator runtime are documented in
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 Use the focused Google Colab notebook for classifier-by-classifier validation,
-error analysis, threshold selection, and frozen held-out evaluation:
+error analysis, calibration, and fail-closed evaluation preparation:
 
 ```text
-notebooks/classifier_evaluation_colab.ipynb
+notebooks/chest_classifier_build_colab.ipynb
 ```
 
-The separate `notebooks/system_test.ipynb` remains a mixed-scenario integration and
-wiring demonstration. Passing either workflow is **not** a clinical-performance result.
+The historical `notebooks/classifier_evaluation_colab.ipynb` uses third-party mirror
+partition names and is retained only as an exploratory record; it is not the current
+evidence path. The separate `notebooks/system_test.ipynb` remains a mixed-scenario
+integration and wiring demonstration. Passing any workflow is **not** a
+clinical-performance result.
+
+The current chest-classifier decision, endpoint definitions, leakage controls, and
+one-T4 experiment ladder are recorded in
+[`docs/CHEST_CLASSIFIER_RESET.md`](docs/CHEST_CLASSIFIER_RESET.md). The legacy custom
+14-label DenseNet is retired as a candidate. KAD-512 is the first replacement candidate,
+and acceptance proceeds one endpoint at a time, beginning with pneumothorax. Each
+endpoint uses a separate frozen one-query KAD pack because decoder self-attention makes
+scores depend on the other queries present; old shared three-query scores are not valid
+endpoint-isolated evidence. The
+development protocol freezes patient-disjoint model-selection (30%), calibration
+(20%), threshold-selection (20%), and untouched-acceptance (30%) roles. A frozen
+threshold becomes test-ready only if study-level sensitivity and specificity pass
+two-sided 95% Wilson bounds on score-blind, deterministic SHA-256-selected studies
+(one positive per positive patient and one negative per negative patient) in the
+untouched role, with at least 22 positive and 20 negative acceptance patients, using
+verified original NIH development pixels. All-study acceptance metrics and the
+notebook's current 320-pixel JPEG mirror cannot produce a test-ready decision.
+The mirror path does not read or report untouched-acceptance scores at all.
+
+Those memberships are endpoint-specific and fixed across candidates by protocol
+seed `20250729` and a fixed 512-attempt score-blind label-support search. The
+canonical CLI rejects seed/search changes; shared multi-endpoint encoder adaptation
+is not supported by this split design.
+
+The current provenance reader also rejects a self-declared
+`original_nih_pixels=true` receipt. Original-pixel acceptance remains disabled until
+the repository has a trusted ingestion path that verifies NIH archive/source identity
+and binds the selected original bytes to the canonical manifest.
+
+KAD licensing also remains an explicit release blocker: its reviewed code commit has an
+MIT `LICENSE`, but separate terms for the downloadable checkpoint weights are not stated
+in the project README or download. Research evaluation can continue, while company or
+product use requires legal confirmation of the weight rights.
 
 ## Metrics and evaluation policy
 

@@ -14,6 +14,7 @@ env/
 # Exception: system_test notebook has no credentials — safe to track
 !notebooks/system_test.ipynb
 !notebooks/classifier_evaluation_colab.ipynb
+!notebooks/chest_classifier_build_colab.ipynb
 *.egg/
 
 # Data & weights (never commit raw scans or trained models)

@@ -12,8 +12,10 @@ wrap it as an `ExpertModel` so the router/orchestrator treat it like any other e
     count × spacing, and a bounding-box extent in mm. These are real measurements, so the
     reporter verbalizes them and the verifier can ground every number against them.
 
-Nothing here is trained; it is a deploy-and-go expert. The heavy deps (`totalsegmentator`,
-`nibabel`, `numpy`) are imported lazily so importing this module stays cheap offline.
+Nothing here is trained locally. A working adapter is not evidence that the measurements
+are valid for a target CT population; that requires geometry-preserving real-data
+evaluation. The heavy deps (`totalsegmentator`, `nibabel`, `numpy`) are imported lazily so
+importing this module stays cheap offline.
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ def findings_from_label_counts(
         findings.append(
             Finding(
                 label=name,
-                probability=1.0,  # segmentation is a hard assignment, not a score
+                probability=None,  # a hard segmentation label is not a probability
                 present=True,
                 confidence=confidence,
                 volume_ml=volume_ml,
@@ -131,7 +133,10 @@ class TotalSegmentatorExpert:
         import torch
 
         pred.segmentation = torch.as_tensor(arr.astype("int64"))
-        pred.confidence = 0.9  # nnU-Net is strong, but this is not a calibrated score
+        # TotalSegmentator does not expose one calibrated study-level confidence.
+        # Fabricating a fixed value would be indistinguishable from model evidence
+        # downstream, so leave it explicitly unavailable.
+        pred.confidence = None
         pred.meta.extra = dict(pred.meta.extra or {})
         pred.meta.extra["seg_spacing"] = spacing
         pred.meta.extra["label_map"] = self._class_map()

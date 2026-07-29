@@ -127,8 +127,9 @@ class Verifier:
             "count": [],
         }
         for f in present:
-            allowed[""].append(round(f.probability, 3))
-            allowed["%"].append(round(f.probability * 100, 1))
+            if f.probability is not None:
+                allowed[""].append(round(f.probability, 3))
+                allowed["%"].append(round(f.probability * 100, 1))
             if f.confidence is not None:
                 allowed[""].append(round(f.confidence, 3))
                 allowed["%"].append(round(f.confidence * 100, 1))

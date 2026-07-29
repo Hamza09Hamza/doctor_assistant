@@ -1,35 +1,38 @@
-"""TorchXRayVision — a strong, already-trained chest-X-ray classifier, wrapped as an expert.
+"""TorchXRayVision chest-X-ray engineering control, wrapped as an expert.
 
 Why this exists: training our own DenseNet on a Colab budget only reached ~0.74 AUC with
 badly-calibrated logits (every probability squashed below ~0.15), so real findings never
 crossed threshold. TorchXRayVision (Cohen et al.) ships DenseNet-121 weights trained on
 several different combinations of NIH ChestX-ray14 + CheXpert + MIMIC-CXR + PadChest, with
-calibrated multi-label outputs that actually fire on true pathology. We wrap it as an
-`ExpertModel` — same contract as every other expert — so the router/orchestrator use it
-unchanged:
+multi-label ranking scores and published operating-point normalization. Because its
+``all`` weights include NIH training data, it is not an independent NIH comparator and
+its normalized scores are not accepted probabilities for this project. We wrap it as an
+`ExpertModel` so the router/orchestrator can use it as an explicit engineering control:
 
   * `predict(scan)` runs the pretrained net(s) and fills `Prediction.class_probs` with the
     subset of TorchXRayVision's pathologies that match our ChestX-ray14 vocabulary. The
     pipeline's threshold step turns those scores into `Finding`s — no custom hook needed.
 
-Nothing here is trained; it is a deploy-and-go expert. Like the other adapters, the heavy
+Nothing here is trained locally. Like the other adapters, the heavy
 deps (`torchxrayvision`, `torch`) import lazily, so importing this module stays cheap
 offline. Weights download once from the TorchXRayVision release and are cached locally — no
 API, no network at inference (the project rule: local weights only).
 
 Ensembling: `weights` takes *either* a single string (one model) or a sequence of them
 (loads each, averages their op-norm-calibrated scores per pathology) — the machinery exists
-because it's a real, correct technique. But don't reach for it by default: measured on 300
-real NIH ChestX-ray14 test images (scripts/eval_chest_xrv.py), plain "all" alone scored
-0.7582 macro AUC, and every ensemble beat it by "all" scored *worse* than "all" alone —
+because it is a valid experiment. But don't reach for it by default: measured on 300
+images from an unverified third-party mirror partition named ``test``
+(`scripts/eval_chest_xrv.py`), plain "all" alone scored
+0.7582 macro AUC, and every ensemble compared with "all" scored *worse* than "all" alone —
 "all+nih" 0.7558 (a wash), "all+nih+chex" 0.7327, "nih" alone 0.7325, "chex" alone 0.5960.
 Two reasons this "free win" doesn't materialize here: "all" is trained on the *union*
 including nih and chex, so adding those checkpoints back in isn't an independent second
 opinion, just diluted noise; and "chex" alone is missing several NIH pathologies from its
 own label vocabulary entirely (Fibrosis/Infiltration/Mass/Nodule/Pleural_Thickening came
 back at exactly 0.5 AUC — a flat, uncalibrated score), so folding it in actively hurts.
-Re-run that eval script before trusting an ensemble config again — this result is specific
-to NIH-sourced test images and torchxrayvision's specific per-dataset checkpoints, not a
+That observation is exploratory: source filenames were unavailable, so the rows could
+not be reconciled against NIH's official manifests. Re-run under a provenance-checked
+protocol before trusting an ensemble config; it is not a held-out performance claim or a
 general "ensembling doesn't work" claim.
 """
 

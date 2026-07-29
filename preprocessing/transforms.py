@@ -26,6 +26,12 @@ class PreprocessConfig:
     # "ct_window" -> clamp to a Hounsfield window then [0,1].
     intensity: str = "scale"
     ct_window: tuple[float, float] = (-1000.0, 400.0)
+    # Optional model-owned channel normalization, applied after [0,1]-space
+    # augmentation. Pretrained timm backbones populate these from their resolved
+    # data config rather than relying on hard-coded ImageNet constants.
+    channel_mean: tuple[float, ...] | None = None
+    channel_std: tuple[float, ...] | None = None
+    interpolation: str | None = None
     augment: bool = True
     # Probabilities for train-time spatial/intensity augmentation.
     aug_prob: float = 0.3
@@ -47,6 +53,28 @@ class AdaptChannels:
             return x[: self.n]
         reps = (self.n + c - 1) // c
         return x.repeat(reps, *tail)[: self.n]
+
+
+class NormalizeChannels:
+    """Apply a fixed per-channel ``(x - mean) / std`` model input contract."""
+
+    def __init__(self, mean: tuple[float, ...], std: tuple[float, ...]) -> None:
+        if len(mean) != len(std) or not mean:
+            raise ValueError("channel_mean and channel_std must have equal non-zero length")
+        if any(value <= 0 for value in std):
+            raise ValueError("channel_std values must be positive")
+        self.mean = tuple(float(value) for value in mean)
+        self.std = tuple(float(value) for value in std)
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[0] != len(self.mean):
+            raise ValueError(
+                f"normalization has {len(self.mean)} channels but input has {x.shape[0]}"
+            )
+        shape = (len(self.mean),) + (1,) * (x.ndim - 1)
+        mean = torch.as_tensor(self.mean, dtype=x.dtype, device=x.device).reshape(shape)
+        std = torch.as_tensor(self.std, dtype=x.dtype, device=x.device).reshape(shape)
+        return (x - mean) / std
 
 
 def build_preprocess(cfg: PreprocessConfig, train: bool = False) -> Callable:
@@ -78,15 +106,26 @@ def build_preprocess(cfg: PreprocessConfig, train: bool = False) -> Callable:
     else:  # "scale"
         steps.append(ScaleIntensity(minv=0.0, maxv=1.0))
 
-    steps.append(Resize(spatial_size=cfg.spatial_size))
+    resize_kwargs: dict = {"spatial_size": cfg.spatial_size}
+    if cfg.interpolation is not None:
+        resize_kwargs["mode"] = cfg.interpolation
+    steps.append(Resize(**resize_kwargs))
     steps.append(AdaptChannels(cfg.in_channels))
 
     if train and cfg.augment:
         steps += [
-            RandFlip(prob=cfg.aug_prob, spatial_axis=None),
+            # MONAI interprets ``None`` as all spatial axes, which turns a 2-D
+            # image by 180 degrees. Chest radiographs may be mirrored left/right,
+            # but must never be trained upside down.
+            RandFlip(prob=cfg.aug_prob, spatial_axis=len(cfg.spatial_size) - 1),
             RandGaussianNoise(prob=cfg.aug_prob, std=0.02),
             RandAdjustContrast(prob=cfg.aug_prob, gamma=(0.8, 1.2)),
         ]
+
+    if (cfg.channel_mean is None) != (cfg.channel_std is None):
+        raise ValueError("channel_mean and channel_std must be provided together")
+    if cfg.channel_mean is not None and cfg.channel_std is not None:
+        steps.append(NormalizeChannels(cfg.channel_mean, cfg.channel_std))
 
     steps.append(EnsureType(data_type="tensor", dtype=torch.float32))
     return Compose(steps)

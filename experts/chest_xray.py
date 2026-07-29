@@ -7,7 +7,9 @@ segmentation masks, so localization rides on Grad-CAM rather than mask geometry.
 pipeline reports cleanly here, the mask-based packs (brain MRI) are the easier case.
 
 Architecture: one shared 2D backbone (DenseNet-121, the CheXNet standard) feeding a
-multi-label classification head and a confidence head. Segmentation is intentionally
+multi-label classification head. A legacy confidence head remains available explicitly
+for checkpoint compatibility, but is not trained by default: exact-match correctness is
+a poor auxiliary target for sparse multi-label findings. Segmentation is intentionally
 omitted — there is nothing to supervise it with — so 'where' comes from `GradCAM`.
 """
 
@@ -44,7 +46,7 @@ def build_chest_xray_expert(
     pretrained: bool = True,
     image_size: int = 320,
     in_channels: int = 3,
-    with_confidence: bool = True,
+    with_confidence: bool = False,
     train_preprocess: bool = False,
 ) -> BaseExpert:
     """Assemble a chest X-ray expert ready to train or to load weights into.
@@ -66,10 +68,39 @@ def build_chest_xray_expert(
     if with_confidence:
         heads["confidence"] = ConfidenceHead(bb.out_channels, spatial_dims=2)
 
+    data_config = bb.data_config or {}
+    channel_mean = data_config.get("mean")
+    channel_std = data_config.get("std")
+    if channel_mean is not None and len(channel_mean) != in_channels:
+        raise ValueError(
+            f"{backbone!r} publishes {len(channel_mean)} normalization channels, "
+            f"but in_channels={in_channels}; use the model's native channel count"
+        )
+    if channel_std is not None and len(channel_std) != in_channels:
+        raise ValueError(
+            f"{backbone!r} publishes {len(channel_std)} normalization channels, "
+            f"but in_channels={in_channels}; use the model's native channel count"
+        )
+
     cfg = PreprocessConfig(
         spatial_size=(image_size, image_size),
         in_channels=in_channels,
         intensity="scale",  # X-ray: simple min-max to [0,1]
+        channel_mean=(
+            tuple(float(value) for value in channel_mean)
+            if channel_mean is not None
+            else None
+        ),
+        channel_std=(
+            tuple(float(value) for value in channel_std)
+            if channel_std is not None
+            else None
+        ),
+        interpolation=(
+            str(data_config["interpolation"])
+            if data_config.get("interpolation") is not None
+            else None
+        ),
     )
     preprocess = build_preprocess(cfg, train=train_preprocess)
 

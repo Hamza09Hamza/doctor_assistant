@@ -1,8 +1,9 @@
-"""Reproducible scorecard for one chest X-ray classifier at a time.
+"""Reproducible exploratory scorecard for one chest X-ray classifier at a time.
 
-Development runs default to the validation split.  Use ``--split test`` only after a
-model and its thresholds have been frozen.  The JSON report and NPZ predictions make
-subsequent model variants directly comparable on the exact same studies.
+Development runs default to the third-party mirror partition named ``valid``. The
+mirror's ``valid``/``test`` names have not been reconciled against NIH's official
+filename manifests, so even a frozen ``--split test`` run is exploratory rather than
+official test evidence. The JSON report records this provenance.
 """
 
 from __future__ import annotations
@@ -177,8 +178,8 @@ def main() -> None:
         parser.error("--threshold must be in [0, 1]")
     if args.split == "test" and args.threshold_artifact is None:
         print(
-            "WARNING: test split requested without frozen validation thresholds; "
-            "this run is ranking analysis only and must not be used to tune the model."
+            "WARNING: mirror partition 'test' requested without frozen validation "
+            "thresholds; this run is ranking analysis only."
         )
 
     sample = load_split_sample(
@@ -228,20 +229,37 @@ def main() -> None:
     )
 
     prediction_path = args.output.with_suffix(".predictions.npz")
+    source_filename_count = sum(
+        name is not None for name in sample["source_filenames"]
+    )
+    smoke_only = source_filename_count == 0
+    if smoke_only:
+        print(
+            "SMOKE ONLY: this mirror sample exposes no original NIH filenames; "
+            "official manifest membership cannot be checked."
+        )
     artifact = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "smoke_only": smoke_only,
         "purpose": (
             "development_validation"
             if args.split == "valid"
-            else "frozen_held_out_evaluation"
+            else "exploratory_mirror_test_analysis"
         ),
         "dataset": {
             "id": _DATASET_ID,
             "revision": args.dataset_revision,
             "split": args.split,
+            "partition_provenance": sample["partition_provenance"],
+            "official_nih_manifest_reconciled": sample[
+                "official_manifest_reconciled"
+            ],
             "seed": args.seed,
             "images": len(labels),
             "patients": len(set(sample["patient_ids"])),
+            "source_filename_ids_available": source_filename_count,
+            "source_filename_ids_total": len(sample["source_filenames"]),
+            "smoke_only": smoke_only,
         },
         "model": model_info,
         "threshold_source": (
@@ -253,7 +271,19 @@ def main() -> None:
         "subgroups": subgroups,
         "ranked_errors": errors,
         "predictions": str(prediction_path),
-        "warning": "Research benchmark only; not evidence of clinical validity.",
+        "warning": (
+            (
+                "SMOKE ONLY: the mirror exposed no original NIH filenames, so image "
+                "membership cannot be reconciled. "
+            )
+            if smoke_only
+            else ""
+        )
+        + (
+            "Research benchmark only. This Hugging Face mirror partition was not "
+            "reconciled against NIH's official image manifests; it is not official "
+            "validation/test evidence or evidence of clinical validity."
+        ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
@@ -267,6 +297,9 @@ def main() -> None:
         class_names=np.asarray(CHESTXRAY14_LABELS),
         patient_ids=np.asarray(sample["patient_ids"]),
         sample_ids=np.asarray(sample["sample_ids"]),
+        source_filenames=np.asarray(
+            [name or "" for name in sample["source_filenames"]]
+        ),
     )
 
     macro = scorecard["macro"]

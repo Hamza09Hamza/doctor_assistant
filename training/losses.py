@@ -37,12 +37,16 @@ class AsymmetricLoss(nn.Module):
         gamma_pos: float = 1.0,
         clip: float = 0.05,
         eps: float = 1e-8,
+        reduction: str = "sum",
     ) -> None:
         super().__init__()
+        if reduction not in {"sum", "mean"}:
+            raise ValueError("reduction must be 'sum' or 'mean'")
         self.gamma_neg = gamma_neg
         self.gamma_pos = gamma_pos
         self.clip = clip
         self.eps = eps
+        self.reduction = reduction
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         targets = targets.float()
@@ -60,18 +64,21 @@ class AsymmetricLoss(nn.Module):
         loss = loss + anti_targets * torch.log(xs_neg.clamp(min=self.eps))
 
         if self.gamma_neg > 0 or self.gamma_pos > 0:
-            # Focal-style modulation, asymmetric between classes: easy negatives
-            # (xs_neg_w close to 1) get crushed by gamma_neg; positives are barely
-            # touched by the smaller gamma_pos.
-            xs_pos_w = xs_pos * targets
-            xs_neg_w = xs_neg * anti_targets
-            asymmetric_w = torch.pow(
-                (1.0 - xs_pos_w - xs_neg_w).clamp(min=0.0),
-                self.gamma_pos * targets + self.gamma_neg * anti_targets,
-            )
+            # Match the official ASL implementation: the focal modulation is a
+            # detached weight. Gradients flow through the positive/negative
+            # log-likelihood term, not through the dynamically computed weight.
+            with torch.no_grad():
+                xs_pos_w = xs_pos * targets
+                xs_neg_w = xs_neg * anti_targets
+                asymmetric_w = torch.pow(
+                    (1.0 - xs_pos_w - xs_neg_w).clamp(min=0.0),
+                    self.gamma_pos * targets + self.gamma_neg * anti_targets,
+                )
             loss = loss * asymmetric_w
 
-        return -loss.mean()
+        # The reference ASL uses a sum over batch and labels. Keep mean available
+        # only as an explicit opt-in for callers that also retune the learning rate.
+        return -loss.sum() if self.reduction == "sum" else -loss.mean()
 
 
 class MultiTaskLoss(nn.Module):
@@ -82,6 +89,7 @@ class MultiTaskLoss(nn.Module):
         asl_gamma_neg: float = 4.0,
         asl_gamma_pos: float = 1.0,
         asl_clip: float = 0.05,
+        asl_reduction: str = "sum",
     ) -> None:
         super().__init__()
         self.weights = weights or {}
@@ -94,7 +102,12 @@ class MultiTaskLoss(nn.Module):
         # docstring); the confidence head's binary "was I correct" target is not the
         # imbalanced-label problem ASL targets, so it keeps self.bce regardless of this.
         self.multilabel_loss = (
-            AsymmetricLoss(gamma_neg=asl_gamma_neg, gamma_pos=asl_gamma_pos, clip=asl_clip)
+            AsymmetricLoss(
+                gamma_neg=asl_gamma_neg,
+                gamma_pos=asl_gamma_pos,
+                clip=asl_clip,
+                reduction=asl_reduction,
+            )
             if multilabel
             else None
         )

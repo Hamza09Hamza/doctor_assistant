@@ -1,5 +1,10 @@
 # Progress Notes — Chest X-ray Tuning + MSK Fracture Expert
 
+> Historical record: the chest readiness language and mirror-based measurements below
+> are superseded by [`CHEST_CLASSIFIER_RESET.md`](CHEST_CLASSIFIER_RESET.md). The legacy
+> chest model is not accepted, and the old mirror partition cannot be treated as an
+> official held-out test.
+
 This document is a full, literal record of one working session: what was changed, why,
 how each change was verified (or wasn't), and exactly where things are blocked. It exists
 so this work can be picked up from a different machine/network/session without losing any

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
+
 from core.enums import BodyPart, Modality
 from core.types import ScanMetadata
-from reporting.findings import Finding
+from reporting.findings import Finding, findings_from_mask
 from reporting.guidelines import GuidelineEngine
 from reporting.reporter import Reporter, StructuredReport
 from reporting.verifier import Verifier
@@ -94,6 +96,33 @@ class ReportingTests(unittest.TestCase):
         report = Reporter(llm=FailingIfCalled()).report([], self.meta)
         self.assertEqual(report.generator, "template")
         self.assertIn("No significant abnormality", report.findings)
+
+    def test_unscored_mask_never_fabricates_a_probability(self) -> None:
+        mask = np.ones((4, 4), dtype=np.uint8)
+
+        findings = findings_from_mask(mask, "Liver", min_voxels=10)
+        report = Reporter(llm=None).report(findings, self.meta)
+        verdict = Verifier(known_labels=["Liver"]).verify(report)
+
+        self.assertEqual(len(findings), 1)
+        self.assertIsNone(findings[0].probability)
+        self.assertNotIn("probability", findings[0].to_facts())
+        self.assertNotIn("score", report.findings.lower())
+        self.assertTrue(verdict.ok, verdict.summary())
+
+    def test_verifier_rejects_score_when_source_has_no_probability(self) -> None:
+        report = StructuredReport(
+            findings="Liver — score 1.00.",
+            source_findings=[Finding(label="Liver", probability=None)],
+        )
+
+        verdict = Verifier(known_labels=["Liver"]).verify(report)
+
+        self.assertFalse(verdict.ok)
+        self.assertTrue(
+            any("ungrounded number '1.00'" in flag for flag in verdict.flags),
+            verdict.summary(),
+        )
 
 
 if __name__ == "__main__":

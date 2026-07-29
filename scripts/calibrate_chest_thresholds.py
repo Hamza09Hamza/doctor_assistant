@@ -1,8 +1,11 @@
-"""Select per-label chest reporting thresholds on validation patients, then test once.
+"""Explore per-label chest reporting thresholds on third-party mirror partitions.
 
-This script deliberately keeps threshold selection and evaluation on different public
-dataset splits. It refuses to export a deployable threshold dictionary when any label
-has inadequate validation counts or cannot meet the declared constraints.
+The Hugging Face source used here exposes partitions named ``valid`` and ``test``, but
+does not expose a source filename field in its declared schema. Those partition names
+have not been reconciled against NIH's official ``train_val_list.txt`` and
+``test_list.txt`` and therefore are not official-split evidence. The artifact records
+that limitation explicitly. Use ``data.nih_protocol`` with the original filenames and
+official manifests for a frozen evaluation protocol.
 
 Example:
     python scripts/calibrate_chest_thresholds.py \
@@ -33,6 +36,7 @@ import numpy as np
 import torch
 
 from data.chest_xray14 import CHESTXRAY14_LABELS
+from data.nih_protocol import filename_from_mirror_row
 from evaluation.thresholds import (
     calibrated_threshold_dict,
     evaluate_frozen_thresholds,
@@ -53,6 +57,10 @@ _DEFAULT_CACHE = Path(
         Path.home() / ".cache" / "doctor_assistant" / "evaluation",
     )
 )
+_MIRROR_CACHE_SCHEMA = 2
+_MIRROR_PARTITION_PROVENANCE = (
+    "third_party_huggingface_partition_not_reconciled_with_nih_official_manifests"
+)
 
 
 def load_split_sample(
@@ -64,24 +72,37 @@ def load_split_sample(
     *,
     require_metadata: bool = False,
 ) -> dict:
-    """Load/cache images, labels, and patient IDs from one public dataset split."""
+    """Load/cache one named partition from an unverified third-party mirror."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = (
         cache_dir
-        / f"nih_{split}_n{n}_seed{seed}_rev{dataset_revision[:12]}.pt"
+        / (
+            f"nih_hf_mirror_v{_MIRROR_CACHE_SCHEMA}_{split}_n{n}_seed{seed}"
+            f"_rev{dataset_revision[:12]}.pt"
+        )
     )
     if cache_path.is_file():
         blob = torch.load(cache_path, weights_only=False)
-        required = {"images", "labels", "patient_ids"}
+        required = {
+            "images",
+            "labels",
+            "patient_ids",
+            "sample_ids",
+            "source_filenames",
+            "partition_provenance",
+            "official_manifest_reconciled",
+        }
         if require_metadata:
-            required |= {"sample_ids", "patient_ages", "patient_genders", "view_positions"}
+            required |= {"patient_ages", "patient_genders", "view_positions"}
         if required <= set(blob):
             print(f"Loading cached {split} sample from {cache_path}")
+            _warn_unverified_mirror_partition(split)
             return blob
 
     from datasets import load_dataset
 
-    print(f"Streaming {n} {split} images with patient IDs ...")
+    _warn_unverified_mirror_partition(split)
+    print(f"Streaming {n} images from mirror partition {split!r} ...")
     dataset = load_dataset(
         _DATASET_ID,
         split=split,
@@ -91,9 +112,11 @@ def load_split_sample(
     dataset = dataset.shuffle(seed=seed, buffer_size=min(4000, max(200, n * 4)))
 
     images, labels, patient_ids = [], [], []
-    sample_ids, patient_ages, patient_genders, view_positions = [], [], [], []
+    sample_ids, source_filenames = [], []
+    patient_ages, patient_genders, view_positions = [], [], []
     started = time.time()
     for index, row in enumerate(dataset.take(n)):
+        source_filename = filename_from_mirror_row(row)
         image = row["image"].convert("L")
         # Keep cached source images as uint8. Full-resolution NIH images are 1024²;
         # float32 caching costs ~4 GB per 1,000 studies and exhausts a Colab runtime
@@ -104,7 +127,14 @@ def load_split_sample(
         labels.append(_to_multihot(row["label"]))
         patient_id = int(row["Patient ID"])
         patient_ids.append(patient_id)
-        sample_ids.append(f"{split}:{index}:patient:{patient_id}")
+        source_filenames.append(source_filename)
+        sample_ids.append(
+            source_filename
+            or (
+                f"hf-mirror:{dataset_revision[:12]}:{split}:seed:{seed}:"
+                f"sample:{index}"
+            )
+        )
         patient_ages.append(int(row["Patient Age"]))
         patient_genders.append(str(row["Patient Gender"]).strip() or "UNKNOWN")
         view_positions.append(str(row["View Position"]).strip() or "UNKNOWN")
@@ -114,12 +144,15 @@ def load_split_sample(
         "labels": np.stack(labels),
         "patient_ids": patient_ids,
         "sample_ids": sample_ids,
+        "source_filenames": source_filenames,
         "patient_ages": patient_ages,
         "patient_genders": patient_genders,
         "view_positions": view_positions,
         "split": split,
         "seed": seed,
         "dataset_revision": dataset_revision,
+        "partition_provenance": _MIRROR_PARTITION_PROVENANCE,
+        "official_manifest_reconciled": False,
     }
     torch.save(blob, cache_path)
     print(
@@ -127,6 +160,14 @@ def load_split_sample(
         f"in {time.time() - started:.1f}s"
     )
     return blob
+
+
+def _warn_unverified_mirror_partition(split: str) -> None:
+    print(
+        "WARNING: Hugging Face mirror partition "
+        f"{split!r} has not been reconciled with the official NIH filename "
+        "manifests. Results are exploratory, not official validation/test evidence."
+    )
 
 
 def main() -> None:
@@ -174,9 +215,9 @@ def main() -> None:
         )
 
     expert = TorchXRayVisionExpert(device=args.device)
-    print("Running validation inference ...")
+    print("Running exploratory mirror-validation inference ...")
     valid_probs = run_expert(expert, valid["images"])
-    print("Running held-out test inference ...")
+    print("Running exploratory mirror-test inference ...")
     test_probs = run_expert(expert, test["images"])
 
     selections = select_per_label_thresholds(
@@ -196,20 +237,39 @@ def main() -> None:
         all_thresholds,
     )
 
-    thresholds_complete = True
+    diagnostic_selection_complete = True
     try:
-        pipeline_thresholds = calibrated_threshold_dict(selections)
+        diagnostic_candidate_thresholds = calibrated_threshold_dict(selections)
     except ValueError as exc:
-        thresholds_complete = False
-        pipeline_thresholds = None
-        print(f"NOT EXPORTABLE: {exc}")
+        diagnostic_selection_complete = False
+        diagnostic_candidate_thresholds = None
+        print(f"DIAGNOSTIC SELECTION INCOMPLETE: {exc}")
+
+    valid_source_filename_count = sum(
+        name is not None for name in valid["source_filenames"]
+    )
+    test_source_filename_count = sum(
+        name is not None for name in test["source_filenames"]
+    )
+    smoke_only = (
+        valid_source_filename_count == 0 or test_source_filename_count == 0
+    )
+    if smoke_only:
+        print(
+            "SMOKE ONLY: at least one mirror partition exposes no original NIH "
+            "filenames; official manifest membership cannot be checked."
+        )
 
     artifact = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "smoke_only": smoke_only,
         "dataset": {
             "id": _DATASET_ID,
             "revision": args.dataset_revision,
             "seed": args.seed,
+            "partition_provenance": _MIRROR_PARTITION_PROVENANCE,
+            "official_nih_manifest_reconciled": False,
+            "smoke_only": smoke_only,
         },
         "model": {
             "expert": expert.name,
@@ -219,36 +279,59 @@ def main() -> None:
             "torchxrayvision_version": importlib.metadata.version("torchxrayvision"),
         },
         "selection": {
-            "split": "valid",
+            "mirror_partition": "valid",
             "images": len(valid["images"]),
             "patients": len(set(valid["patient_ids"])),
+            "source_filename_ids_available": valid_source_filename_count,
+            "source_filename_ids_total": len(valid["source_filenames"]),
             "sensitivity_target": args.sensitivity_target,
             "specificity_floor": args.specificity_floor,
             "min_positives": args.min_positives,
             "min_negatives": args.min_negatives,
             "per_label": [item.to_dict() for item in selections],
         },
-        "held_out_test": {
-            "split": "test",
+        "mirror_test_analysis": {
+            "mirror_partition": "test",
             "images": len(test["images"]),
             "patients": len(set(test["patient_ids"])),
+            "source_filename_ids_available": test_source_filename_count,
+            "source_filename_ids_total": len(test["source_filenames"]),
             "patient_overlap": 0,
             "auc_per_label": compute_aucs(test_probs, test["labels"]),
             "operating_metrics": held_out,
         },
-        "thresholds_complete": thresholds_complete,
-        "pipeline_thresholds": pipeline_thresholds,
+        "diagnostic_selection_complete": diagnostic_selection_complete,
+        "diagnostic_candidate_thresholds": diagnostic_candidate_thresholds,
+        # This source is never reconciled to the official NIH manifests. Do not
+        # emit the generic fields that load_calibrated_thresholds accepts.
+        "threshold_export_eligible": False,
+        "thresholds_complete": False,
+        "pipeline_thresholds": None,
+        "eligible_as_official_nih_test_evidence": False,
         "warning": (
-            "Research configuration only. Public retrospective data; not clinical validation."
+            (
+                "SMOKE ONLY: at least one mirror partition exposed no original NIH "
+                "filenames, so membership cannot be reconciled. "
+            )
+            if smoke_only
+            else ""
+        )
+        + (
+            "Research configuration only. The mirror partition names were not "
+            "reconciled against NIH's official image manifests and are not official "
+            "validation/test evidence or clinical validation."
         ),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(_json_safe(artifact), indent=2, allow_nan=False) + "\n"
     )
-    print(f"Wrote {args.output} (thresholds_complete={thresholds_complete})")
+    print(
+        f"Wrote {args.output} "
+        "(diagnostic mirror thresholds only; pipeline export disabled)"
+    )
 
-    print("\nPer-label validation selection -> held-out test:")
+    print("\nPer-label mirror-valid selection -> mirror-test analysis:")
     for item in selections:
         test_row = held_out[item.label]
         status = "OK" if item.supported and item.meets_constraints else "BLOCKED"

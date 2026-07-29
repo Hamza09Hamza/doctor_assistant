@@ -122,7 +122,7 @@ def parse_maira2_grounding(
         findings.append(
             Finding(
                 label=label,
-                probability=1.0,            # MAIRA-2 is generative; no calibrated score
+                probability=None,           # MAIRA-2 exposes no calibrated probability
                 present=present,
                 confidence=confidence,
                 laterality=laterality,

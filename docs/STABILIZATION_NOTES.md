@@ -1,5 +1,10 @@
 # Stabilization notes — 2026-07-28
 
+> Historical note: the chest-evaluation conclusions here are superseded by
+> [`CHEST_CLASSIFIER_RESET.md`](CHEST_CLASSIFIER_RESET.md). The named Hugging Face
+> mirror partition used below was not reconcilable to NIH's official manifests and
+> cannot support held-out evidence.
+
 This pass focused on software safety and reproducibility before adding another model.
 
 ## Corrected behavior

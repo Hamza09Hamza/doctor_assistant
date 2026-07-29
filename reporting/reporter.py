@@ -296,7 +296,8 @@ def _phrase_finding(f: Finding) -> str:
     sentence = " ".join(parts)
     if detail:
         sentence += f" ({', '.join(detail)})"
-    sentence += f" — score {f.probability:.2f}"
+    if f.probability is not None:
+        sentence += f" — score {f.probability:.2f}"
     if f.confidence is not None:
         sentence += f", confidence {f.confidence:.2f}"
     return sentence[0].upper() + sentence[1:] + "."

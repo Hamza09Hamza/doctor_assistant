@@ -17,10 +17,11 @@ A more accurate variant exists (YOLOv8-ResCBAM, +2.2 AP50 per the paper) but it 
 the authors' modified `ultralytics` fork to load its custom attention modules — real
 integration risk for a research repo of unknown ongoing maintenance. This plain-YOLOv8
 checkpoint loads through the stock `ultralytics` package, so it's the reliable choice for
-a working prototype; swapping in ResCBAM later is a drop-in weights change if the extra
-accuracy is ever worth that integration cost.
+a software-integration candidate; swapping in ResCBAM later is a possible weights change
+only after compatibility and real-data evaluation justify the extra integration cost.
 
-Nothing here is trained; it is a deploy-and-go expert. `ultralytics` imports lazily so
+Nothing here is trained locally; this adapter and checkpoint are not yet validated for
+the project's target setting. `ultralytics` imports lazily so
 importing this module stays cheap offline. The checkpoint isn't on PyPI/HF, so unlike the
 other adapters we download it ourselves (once, cached locally) from its GitHub release —
 no API, no network at inference.
@@ -28,7 +29,10 @@ no API, no network at inference.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
+import tempfile
 import urllib.request
 from collections.abc import Sequence
 
@@ -50,12 +54,81 @@ _WEIGHTS_URL = (
     "releases/download/Trained_model/best.pt"
 )
 _WEIGHTS_CACHE = os.path.expanduser("~/.cache/doctor_assistant_weights/yolov8_fracture_best.pt")
+_WEIGHTS_BYTES = 22_484_659
+_WEIGHTS_SHA256 = "301abc1774c28dd7c5adbcf1e8a79ed6771273615238b62dd179b622292b3a81"
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_weights(
+    path: str,
+    expected_sha256: str,
+    *,
+    expected_bytes: int | None = None,
+) -> None:
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"fracture checkpoint does not exist: {path}")
+    if _SHA256.fullmatch(expected_sha256) is None:
+        raise ValueError("weights_sha256 must be a lowercase 64-character SHA-256")
+    if expected_bytes is not None and os.path.getsize(path) != expected_bytes:
+        raise RuntimeError(
+            f"fracture checkpoint byte-size mismatch: {path}"
+        )
+    actual = _sha256_file(path)
+    if actual != expected_sha256:
+        raise RuntimeError(
+            f"fracture checkpoint SHA-256 mismatch: got {actual}, "
+            f"expected {expected_sha256}"
+        )
 
 
 def _default_weights_path() -> str:
-    if not os.path.isfile(_WEIGHTS_CACHE):
-        os.makedirs(os.path.dirname(_WEIGHTS_CACHE), exist_ok=True)
-        urllib.request.urlretrieve(_WEIGHTS_URL, _WEIGHTS_CACHE)
+    if os.path.isfile(_WEIGHTS_CACHE):
+        try:
+            _verify_weights(
+                _WEIGHTS_CACHE,
+                _WEIGHTS_SHA256,
+                expected_bytes=_WEIGHTS_BYTES,
+            )
+        except RuntimeError:
+            # Keep the suspect file in place until a complete verified replacement
+            # is ready; os.replace below makes recovery atomic.
+            pass
+        else:
+            return _WEIGHTS_CACHE
+
+    cache_dir = os.path.dirname(_WEIGHTS_CACHE)
+    os.makedirs(cache_dir, exist_ok=True)
+    temporary: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=cache_dir,
+            prefix=".yolov8_fracture_best.",
+            suffix=".download",
+            delete=False,
+        ) as handle:
+            temporary = handle.name
+        urllib.request.urlretrieve(_WEIGHTS_URL, temporary)
+        _verify_weights(
+            temporary,
+            _WEIGHTS_SHA256,
+            expected_bytes=_WEIGHTS_BYTES,
+        )
+        os.replace(temporary, _WEIGHTS_CACHE)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
     return _WEIGHTS_CACHE
 
 
@@ -122,6 +195,8 @@ class MSKFractureExpert:
         *,
         name: str = "msk_fracture_yolov8",
         weights_path: str | None = None,
+        weights_sha256: str | None = None,
+        allow_unverified_weights: bool = False,
         confidence: float = 0.25,
         device: str | None = None,
     ) -> None:
@@ -129,6 +204,8 @@ class MSKFractureExpert:
         self.modality = Modality.XRAY
         self.body_part = BodyPart.BONE
         self.weights_path = weights_path
+        self.weights_sha256 = weights_sha256
+        self.allow_unverified_weights = bool(allow_unverified_weights)
         self.confidence = float(confidence)
         self.device = device
         self.class_names: list[str] = list(GRAZPEDWRI_LABELS)
@@ -137,9 +214,23 @@ class MSKFractureExpert:
     def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
+
+        if self.weights_path is None:
+            resolved_weights = _default_weights_path()
+        else:
+            resolved_weights = os.path.expanduser(self.weights_path)
+            if self.weights_sha256 is None:
+                if not self.allow_unverified_weights:
+                    raise ValueError(
+                        "custom fracture weights require weights_sha256; set "
+                        "allow_unverified_weights=True only for an explicit "
+                        "non-evidence experiment"
+                    )
+            else:
+                _verify_weights(resolved_weights, self.weights_sha256)
         from ultralytics import YOLO
 
-        self._model = YOLO(self.weights_path or _default_weights_path())
+        self._model = YOLO(resolved_weights)
 
     def predict(self, scan: Scan) -> Prediction:
         self._ensure_loaded()

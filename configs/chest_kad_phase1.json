@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "status": "research_candidate",
+  "model": {
+    "name": "KAD-512",
+    "code_repository": "https://github.com/xiaoman-zhang/KAD",
+    "code_revision_reviewed": "591d999e325a783868599b3e53067acd2ecbddc0",
+    "code_license_identifier": "MIT",
+    "checkpoint_license_status": "not_separately_stated_requires_review",
+    "checkpoint_google_drive_file_id": "1nPPs-jWp5gNR5QjXgbnwFNUGygbC3vKI",
+    "checkpoint_bytes": 1990875399,
+    "checkpoint_sha256": "eb7223657220aa51eef43b2e155fd73c593eb5821fdcc8741782f6581ddfea76",
+    "phase1_query_pack_format_version": 2,
+    "phase1_query_context": "one_query_per_endpoint",
+    "bert_model_id": "xmcmic/Med-KEBERT",
+    "bert_model_revision": "3e877eb9119224b81eaffe13839cd93f073cfc37",
+    "query_export_transformers_version": "5.12.1",
+    "query_export_device": "cpu",
+    "image_size": 512,
+    "pretraining_dataset": "MIMIC-CXR"
+  },
+  "targets": [
+    {
+      "label": "Pneumothorax",
+      "prompt": "pneumothorax",
+      "query_set": "doctor_assistant.phase1.pneumothorax.v1",
+      "query_pack_semantic_sha256": "ef46e5e8c1caa7ff0583dea2234e41d507b51a734fcda6e6998a97db26b18211",
+      "priority": 1
+    },
+    {
+      "label": "Nodule_or_mass",
+      "prompt": "lung nodule or mass",
+      "query_set": "doctor_assistant.phase1.nodule_or_mass.v1",
+      "query_pack_semantic_sha256": "4c0796fff42dc53a20d35bf9a69a78424745b5908d8b3f27bcf45297ec079943",
+      "priority": 2
+    },
+    {
+      "label": "Airspace_opacity",
+      "prompt": "airspace opacity",
+      "query_set": "doctor_assistant.phase1.airspace_opacity.v1",
+      "query_pack_semantic_sha256": "d9ed9745d520bb98e9070a887c36bd4f8e1fe1abe577e53166643feef3ae9c16",
+      "priority": 3
+    }
+  ],
+  "preprocessing": {
+    "color_mode": "RGB",
+    "resize": "PIL.Image.resize square BICUBIC",
+    "image_size": 512,
+    "scale": "[0,1]",
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "development_sources": {
+    "expert_labels": {
+      "url": "https://raw.githubusercontent.com/mlmed/torchxrayvision/6fa28a2fbfb1b30fcb5f8f501626d91177ef593c/torchxrayvision/data/google2019_nih-chest-xray-labels.csv.gz",
+      "torchxrayvision_commit": "6fa28a2fbfb1b30fcb5f8f501626d91177ef593c",
+      "sha256": "1d1b846e463753ed0219f67e21b10c8aef381897dbd64865c8191aa5794e8048",
+      "warning": "Public TorchXRayVision mirror of the Google adjudicated table; verify against the direct Google release before locked evaluation."
+    },
+    "nih_metadata": {
+      "repository": "https://huggingface.co/datasets/yeigen/nih-chest-xray",
+      "revision": "c0b558ec72f1ce434f7355f0f5cf914e2d62c60a",
+      "data_entry_sha256": "88f75094e25ccc0c6f1f9cdfd4b2f94f9379a0ae07d5ff4dcf94242707b07462",
+      "train_val_list_sha256": "61fbe896321c1c1c8b75f3e4f3a08e4fef6486d95ef8a667c31d4d60dca6cb81",
+      "test_list_sha256": "38ca5ef7f756092946f57c1a59faca882ed589a1ab1f72590b45dc06c6d5e1cc"
+    },
+    "resized_images": {
+      "dataset": "arudaev/chest-xray-14-320",
+      "revision": "1c9e054e3336a473be6c01d77cdedf96442e2bad",
+      "resolution": 320,
+      "official_manifest_membership": true,
+      "permitted_use": "development_candidate_selection_only",
+      "warning": "Third-party resized JPEGs are not the original NIH pixels and cannot support a final performance claim."
+    }
+  },
+  "locked_test": {
+    "enabled_by_default": false,
+    "requires_original_nih_pixels": true,
+    "requires_frozen_query_pack": true,
+    "requires_frozen_calibrator": true,
+    "requires_frozen_thresholds": true
+  }
+}

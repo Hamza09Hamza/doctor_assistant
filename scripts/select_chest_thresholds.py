@@ -1,8 +1,8 @@
-"""Select per-label thresholds from a validation benchmark artifact.
+"""Explore per-label thresholds from a historical mirror benchmark artifact.
 
-The input must be produced by ``benchmark_chest_classifier.py`` on the validation
-split.  This script never opens the test split; its output can then be supplied to a
-single frozen test benchmark with ``--threshold-artifact``.
+The current ``benchmark_chest_classifier.py`` source is an unreconciled third-party
+mirror. This script can summarize diagnostic candidates, but deliberately emits no
+pipeline-loadable threshold artifact.
 """
 
 from __future__ import annotations
@@ -61,12 +61,12 @@ def select_from_benchmark(
         min_negatives=min_negatives,
     )
     try:
-        pipeline_thresholds = calibrated_threshold_dict(selections)
-        thresholds_complete = True
+        diagnostic_candidate_thresholds = calibrated_threshold_dict(selections)
+        diagnostic_selection_complete = True
         blocked_labels: list[str] = []
     except ValueError:
-        pipeline_thresholds = None
-        thresholds_complete = False
+        diagnostic_candidate_thresholds = None
+        diagnostic_selection_complete = False
         blocked_labels = [
             row.label
             for row in selections
@@ -85,10 +85,17 @@ def select_from_benchmark(
             "min_negatives": min_negatives,
             "per_label": [row.to_dict() for row in selections],
         },
-        "thresholds_complete": thresholds_complete,
+        "diagnostic_selection_complete": diagnostic_selection_complete,
+        "diagnostic_candidate_thresholds": diagnostic_candidate_thresholds,
         "blocked_labels": blocked_labels,
-        "pipeline_thresholds": pipeline_thresholds,
-        "warning": "Research threshold selection only; not clinical validation.",
+        "threshold_export_eligible": False,
+        "thresholds_complete": False,
+        "pipeline_thresholds": None,
+        "eligible_as_official_nih_test_evidence": False,
+        "warning": (
+            "Diagnostic mirror threshold selection only. The source is not "
+            "official-manifest-reconciled and cannot feed Pipeline thresholds."
+        ),
     }
 
 
@@ -116,7 +123,7 @@ def main() -> None:
     )
     print(
         f"Wrote {args.output} "
-        f"(thresholds_complete={artifact['thresholds_complete']})"
+        "(diagnostic mirror thresholds only; pipeline export disabled)"
     )
     if artifact["blocked_labels"]:
         print("Blocked labels:", ", ".join(artifact["blocked_labels"]))

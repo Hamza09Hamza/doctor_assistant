@@ -24,6 +24,11 @@ class Backbone(nn.Module):
 
     out_channels: int
     spatial_dims: int
+    # Image backbones may publish the data contract associated with their weights.
+    # Keeping it on the backbone lets expert builders use the exact normalization
+    # resolved by the model library instead of duplicating architecture-specific
+    # constants in every training notebook.
+    data_config: dict[str, object] | None = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -41,6 +46,17 @@ class TimmBackbone(Backbone):
             pretrained=pretrained,
             features_only=True,
             in_chans=in_channels,
+        )
+        # timm's preprocessing contract is weight/config specific (mean, std,
+        # interpolation, and native input size). Resolve it from the constructed
+        # model so both pretrained training and checkpoint-only inference can use
+        # the same contract. ``resolve_model_data_config`` is the current API;
+        # timm 0.9 exposes the compatible ``resolve_data_config`` fallback.
+        resolver = getattr(timm.data, "resolve_model_data_config", None)
+        self.data_config = (
+            resolver(self.net)
+            if resolver is not None
+            else timm.data.resolve_data_config(model=self.net)
         )
         self.spatial_dims = 2
         self.out_channels = int(self.net.feature_info.channels()[-1])

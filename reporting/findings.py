@@ -42,7 +42,7 @@ class Finding:
     only when a mask/heatmap let us *measure* them — absent stays None (never guessed)."""
 
     label: str                              # e.g. "Cardiomegaly", "glioma"
-    probability: float                      # model score for this finding, [0, 1]
+    probability: float | None               # calibrated/model score when one exists
     present: bool = True                    # passed the decision threshold
     confidence: float | None = None         # optional reliability score; calibration is caller-owned
 
@@ -63,7 +63,9 @@ class Finding:
         Omitting None keeps unmeasured details out of the prompt entirely, so the
         language model is never tempted to fill a blank it was handed.
         """
-        facts: dict[str, Any] = {"label": self.label, "probability": round(self.probability, 3)}
+        facts: dict[str, Any] = {"label": self.label}
+        if self.probability is not None:
+            facts["probability"] = round(self.probability, 3)
         if self.confidence is not None:
             facts["confidence"] = round(self.confidence, 3)
         if self.size_mm is not None:
@@ -144,7 +146,7 @@ def findings_from_mask(
     *,
     spacing: tuple[float, ...] | None = None,
     confidence: float | None = None,
-    probability: float = 1.0,
+    probability: float | None = None,
     min_voxels: int = 10,
     laterality_axis: int = -1,
     region_namer: Callable[[tuple[float, ...]], str | None] | None = None,
@@ -201,7 +203,9 @@ def findings_from_mask(
         findings.append(
             Finding(
                 label=label,
-                probability=float(probability),
+                probability=(
+                    float(probability) if probability is not None else None
+                ),
                 present=True,
                 confidence=confidence,
                 size_mm=size_mm,

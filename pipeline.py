@@ -155,8 +155,15 @@ class Pipeline:
                 + (f" Failures: {details}" if details else "")
             )
 
-        # Salience order: present first, then by probability.
-        all_findings.sort(key=lambda f: (f.present, f.probability), reverse=True)
+        # Salience order: present first, then by an available model score. Findings
+        # derived from hard masks or generative grounding may honestly have no score.
+        all_findings.sort(
+            key=lambda f: (
+                f.present,
+                f.probability if f.probability is not None else float("-inf"),
+            ),
+            reverse=True,
+        )
         result.findings = all_findings
 
         result.report = self.reporter.report(all_findings, scan.meta)
@@ -211,7 +218,7 @@ class Pipeline:
                 label=label,
                 spacing=scan.meta.spacing,
                 confidence=pred.confidence,
-                probability=pred.top_score or 1.0,
+                probability=pred.top_score,
             )
 
         heatmaps = self._classification_heatmaps(expert, pred, scan)

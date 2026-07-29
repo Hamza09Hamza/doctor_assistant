@@ -172,14 +172,29 @@ def calibrated_threshold_dict(
 
 
 def load_calibrated_thresholds(path: str | Path) -> dict[str, float]:
-    """Load a completed calibration artifact for ``Pipeline(thresholds=...)``.
+    """Load an explicitly export-eligible artifact for ``Pipeline(thresholds=...)``.
 
-    Incomplete smoke artifacts are rejected instead of silently falling back to a
-    global threshold.
+    Completeness alone is insufficient: exploratory mirror workflows can calculate
+    diagnostic candidate thresholds but are not allowed to feed the live pipeline.
+    The producing protocol must therefore opt in with
+    ``threshold_export_eligible=true`` and must not carry contradictory smoke or
+    official-evidence flags.
     """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not data.get("thresholds_complete"):
         raise ValueError(f"Threshold artifact is incomplete: {path}")
+    dataset = data.get("dataset")
+    dataset = dataset if isinstance(dataset, dict) else {}
+    explicitly_ineligible = (
+        data.get("threshold_export_eligible") is not True
+        or data.get("smoke_only") is True
+        or data.get("eligible_as_official_nih_test_evidence") is False
+        or dataset.get("official_nih_manifest_reconciled") is False
+    )
+    if explicitly_ineligible:
+        raise ValueError(
+            f"Threshold artifact is not eligible for pipeline export: {path}"
+        )
     raw = data.get("pipeline_thresholds")
     if not isinstance(raw, dict) or not raw:
         raise ValueError(f"Threshold artifact has no pipeline_thresholds: {path}")

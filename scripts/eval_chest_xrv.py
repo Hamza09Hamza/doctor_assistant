@@ -1,12 +1,12 @@
-"""Local eval: which TorchXRayVision weight-set combination actually wins on real data?
+"""Exploratory comparison of TorchXRayVision weight-set configurations.
 
-Pulls a real, labeled sample of the NIH ChestX-ray14 test split (via the
-BahaaEldin0/NIH-Chest-Xray-14 HF dataset — the same real-image source already used
-elsewhere in this project; ChestMNIST is too low-resolution to trust for this), caches it
-locally, and runs it through however many weight-set configurations you ask for, reporting
-per-label + macro AUC for each so they can be compared head to head.
+Pulls real, labeled images from the third-party Hugging Face mirror partition named
+``test`` and compares configurations head to head. The mirror schema does not expose an
+original filename field, so that partition has not been reconciled against NIH's official
+``test_list.txt``. These numbers are useful for exploration but are not official NIH test
+evidence.
 
-No training happens here — every configuration is deploy-and-go pretrained weights. This
+No training happens here — every configuration uses released pretrained weights. This
 only answers: "does averaging op-norm-calibrated scores across these particular weight
 sets move real AUC on real images, and in which direction" — which turned out to matter:
 a first pass on 300 real NIH test images showed the naive all+nih+chex ensemble *losing*
@@ -79,8 +79,11 @@ def load_sample(
     cache_dir: Path = _CACHE_DIR,
     dataset_revision: str = _DATASET_REVISION,
 ):
-    """Stream `n` real, labeled test images, caching to disk so repeat comparisons
-    against different weight-set configs don't re-stream from HF each time."""
+    """Stream a labeled mirror sample and cache it for repeat comparisons."""
+    print(
+        "WARNING: mirror partition 'test' is not reconciled with NIH's official "
+        "filename manifests; results are exploratory."
+    )
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = (
         cache_dir
@@ -93,7 +96,10 @@ def load_sample(
 
     from datasets import load_dataset
 
-    print(f"Streaming {n} test images from BahaaEldin0/NIH-Chest-Xray-14 ...")
+    print(
+        f"Streaming {n} images from the BahaaEldin0/NIH-Chest-Xray-14 "
+        "partition named 'test' ..."
+    )
     ds = load_dataset(
         _DATASET_ID,
         split="test",
