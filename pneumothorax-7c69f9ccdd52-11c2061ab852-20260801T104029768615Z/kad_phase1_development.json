@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "artifact_type": "doctor_assistant.kad_phase1_benchmark",
+  "purpose": "expert_development_evaluation",
+  "cohort": "development",
+  "active_target": "Pneumothorax",
+  "candidate_under_decision": "Pneumothorax",
+  "exploratory_labels": [],
+  "smoke_only": false,
+  "official_manifest_reconciled": true,
+  "evidence_status": "resized_mirror_candidate_selection_only",
+  "model": {
+    "path": "/content/kad-512-phase1-pneumothorax-single-query-v3-pil.pt",
+    "sha256": "9b0191cfcb37a3df7dee40c3a6f754c608717e6d55ae06c37b3f46d18df7036f",
+    "semantic_sha256": "07f9ed5ec200428c5a4e3701c61fcbdc326bd152dde300da4fbffbbc1d11b87c",
+    "labels": [
+      "Pneumothorax"
+    ],
+    "prompts": [
+      "pneumothorax"
+    ],
+    "prompt_set_sha256": "c9bcb85e48148d29122fe67a149501ce7ebd7075aa009d0b8b324e840a334f7f",
+    "source": {
+      "kind": "official-kad-checkpoint",
+      "checkpoint": "/content/kad-512-official.pt",
+      "bert_model_id": "xmcmic/Med-KEBERT",
+      "bert_revision": "3e877eb9119224b81eaffe13839cd93f073cfc37",
+      "tokenizer_id": "xmcmic/Med-KEBERT",
+      "max_length": 256,
+      "checkpoint_sha256": "eb7223657220aa51eef43b2e155fd73c593eb5821fdcc8741782f6581ddfea76",
+      "query_set": "doctor_assistant.phase1.pneumothorax.v1"
+    }
+  },
+  "runtime": {
+    "schema_version": 3,
+    "git_commit": "7c69f9ccdd52ce60bed803ca57e059d65a7ca925",
+    "git_worktree": {
+      "clean": true,
+      "untracked_files_checked": true
+    },
+    "code_sha256": {
+      "experts/kad.py": "f681ffc681d9aef1fcffea3eb3456cf9649fba69d9b1970c67bdaf6d719e3fe5",
+      "scripts/benchmark_kad.py": "9efa65739aab60d318288d4312afb66fa88d35d6fd5a7e4957760ab15b08e0f5"
+    },
+    "versions": {
+      "python": "3.12.13",
+      "torch": "2.11.0+cu128",
+      "torchvision": "0.26.0+cu128",
+      "numpy": "2.0.2",
+      "Pillow": "12.3.0",
+      "torch_cuda_runtime": "12.8",
+      "cudnn_runtime": "91900",
+      "cuda_driver": "580.82.07"
+    },
+    "hardware": {
+      "accelerator": "cuda",
+      "device_index": 0,
+      "name": "Tesla T4",
+      "compute_capability": [
+        7,
+        5
+      ],
+      "total_memory_bytes": 15637086208,
+      "multiprocessor_count": 40
+    },
+    "inference": {
+      "device_requested": "cuda",
+      "device_resolved": "cuda",
+      "amp_requested": true,
+      "amp_enabled": true,
+      "batch_size": 8,
+      "seed": 42
+    },
+    "determinism": {
+      "python_random_seeded": true,
+      "numpy_seeded": true,
+      "torch_cpu_seeded": true,
+      "torch_cuda_seeded": true,
+      "deterministic_algorithms_enabled": true,
+      "deterministic_algorithms_warn_only": false,
+      "cudnn_benchmark": false,
+      "cudnn_deterministic": true,
+      "cuda_matmul_allow_tf32": false,
+      "cudnn_allow_tf32": false,
+      "cublas_workspace_config": ":4096:8",
+      "reproducibility_scope": "deterministic_algorithms_on_identical_hardware_software_and_inputs;cross_hardware_bitwise_identity_not_claimed"
+    }
+  },
+  "runtime_contract_sha256": "39d176b962f934eeea82d39b24f04e4ab5dc36c072112bb3bc07e640d63bbd40",
+  "inputs": {
+    "manifest": "/content/drive/MyDrive/doctor_assistant/kad_phase1/data/expert_manifest/nih_expert_labels.csv",
+    "manifest_sha256": "ca9ef3980ec55c39c7c831a730a32606c8aeb515aba768759a0f2322fb2e3abc",
+    "manifest_metadata": {
+      "path": "/content/drive/MyDrive/doctor_assistant/kad_phase1/data/expert_manifest/nih_expert_labels.metadata.json",
+      "sha256": "a179d91b6356cbdeca02cff2ae2d66b87caeef84ff7f959bfccdc3e957fe6364",
+      "output_cohort": "development",
+      "google_expert_labels_sha256": "1d1b846e463753ed0219f67e21b10c8aef381897dbd64865c8191aa5794e8048"
+    },
+    "source_metadata_provenance": {
+      "path": "/content/nih_metadata_pinned/nih_metadata.provenance.json",
+      "sha256": "dfeb8c70c0f7fe04e690dacb295504a71e9bf5e7e2f636942b66037e1a9adccf",
+      "google_expert_labels_sha256": "1d1b846e463753ed0219f67e21b10c8aef381897dbd64865c8191aa5794e8048",
+      "locked_test_eligible": false
+    },
+    "image_root": "/content/nih_expert_development_320",
+    "image_set_sha256": "30165d073ca7581679fc5c0e8aeaf95fb01d4fb85d0f69e1b82fb314d377ec92",
+    "images": 2414,
+    "patients": 835,
+    "official_train_val_manifest_sha256": "61fbe896321c1c1c8b75f3e4f3a08e4fef6486d95ef8a667c31d4d60dca6cb81",
+    "official_test_manifest_sha256": "38ca5ef7f756092946f57c1a59faca882ed589a1ab1f72590b45dc06c6d5e1cc",
+    "image_provenance": {
+      "path": "/content/nih_expert_development_320/DEVELOPMENT_ONLY.provenance.json",
+      "sha256": "06c7bb9277218546faf9eb9394021fcc54f58925d008435de1ff2613cdb69dd1",
+      "source": "Hugging Face arudaev/chest-xray-14-320@1c9e054e3336a473be6c01d77cdedf96442e2bad; viewer-served 320x320 third-party JPEG re-encodes converted to RGB PNG under the original NIH basename",
+      "resolution": {
+        "width": 320,
+        "height": 320
+      },
+      "original_nih_pixels": false,
+      "canonical_manifest_sha256": "ca9ef3980ec55c39c7c831a730a32606c8aeb515aba768759a0f2322fb2e3abc",
+      "cohort": "development",
+      "rows_selected": 2414,
+      "all_selected_output_sha256_verified": true
+    }
+  },
+  "decision": {
+    "status": "not_supplied",
+    "operating_point_metrics": "disabled"
+  },
+  "test_lock": null,
+  "scorecard": {
+    "images": 2414,
+    "patients": 835,
+    "scoreable_labels": 1,
+    "metrics_scope": "development_analysis_deferred_until_patient_partition",
+    "analysis_deferred": true,
+    "analysis_deferred_until": "calibration_artifact_model_selection_patient_partition",
+    "active_target": "Pneumothorax",
+    "candidate_under_decision": "Pneumothorax",
+    "exploratory_labels": [],
+    "missing_label_policy": "exclude_independently_per_target",
+    "macro": {
+      "auroc": null,
+      "auprc": null
+    },
+    "per_label": {
+      "Pneumothorax": {
+        "images": 2414,
+        "positives": 43,
+        "negatives": 2371,
+        "prevalence": 0.017812758906379452,
+        "auroc": null,
+        "auprc": null,
+        "non_adjudicated_images": 0,
+        "decision_role": "active_target",
+        "analysis_deferred": true
+      }
+    }
+  },
+  "ranked_errors": null,
+  "predictions": "/content/drive/MyDrive/doctor_assistant/kad_phase1/results/pneumothorax-7c69f9ccdd52-11c2061ab852-20260801T104029768615Z/kad_phase1_development.predictions.npz",
+  "warning": "Research evaluation only; no clinical deployment claim. Pixels are declared non-original/resized mirror data; use only for candidate selection, never final evidence.",
+  "predictions_sha256": "801621f58837e509cdeaaf12586f2685af66cb8a95b58acefbe4bc91339c3921"
+}

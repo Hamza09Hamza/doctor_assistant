@@ -278,12 +278,25 @@ gates cannot override `original_nih_pixels=false`; repeat the frozen protocol
 through a trusted original NIH development-pixel path before any threshold can
 become test-ready.
 
-That original-pixel route is intentionally not enabled yet. Schema-1 image
-provenance is only a local declaration, so the benchmark now rejects
-`original_nih_pixels=true` until a trusted ingestion receipt verifies NIH
-archive/source identity and binds the exact selected source bytes to the canonical
-manifest. This prevents a hand-authored receipt from upgrading resized pixels into
-acceptance evidence.
+Schema-1 image provenance is only a local declaration, so the benchmark still
+rejects `original_nih_pixels=true` under that schema unconditionally. This prevents
+a hand-authored receipt from upgrading resized pixels into acceptance evidence.
+
+A second schema (schema-2, `doctor_assistant.nih_image_provenance`) can legitimately
+assert `original_nih_pixels=true`, but only when backed by an `archive_verification`
+block proving multi-source consensus: no NIH-published per-file checksum manifest is
+publicly available, so a single download -- however official-looking its host -- is
+never accepted alone. A file is accepted only once its SHA-256 is identical across at
+least two independently-operated sources (for example, a direct download from the NIH
+Clinical Center host and the NIH-attributed academictorrents release, infohash
+`557481faacd824c83fbf57dcf7b6da9383b3235a`); any disagreement, or too few agreeing
+sources, is a hard failure naming the exact file. `scripts/fetch_nih_original_images.py`
+implements this against already-downloaded, independently-operated local source
+directories -- it does not itself perform the ~42GB download, since that needs a
+high-bandwidth environment such as Colab rather than routine local development.
+Running it for real against the full NIH release, and wiring its output into a Gate 4
+locked-evaluation run, remains a follow-up step; only the ingestion path and its
+schema-2 validator are implemented and unit-tested so far.
 
 ### Gate 4 — locked evaluation
 

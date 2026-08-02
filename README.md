@@ -228,10 +228,13 @@ seed `20250729` and a fixed 512-attempt score-blind label-support search. The
 canonical CLI rejects seed/search changes; shared multi-endpoint encoder adaptation
 is not supported by this split design.
 
-The current provenance reader also rejects a self-declared
-`original_nih_pixels=true` receipt. Original-pixel acceptance remains disabled until
-the repository has a trusted ingestion path that verifies NIH archive/source identity
-and binds the selected original bytes to the canonical manifest.
+The provenance reader still rejects a bare self-declared `original_nih_pixels=true`
+receipt. A verified path now exists behind a multi-source consensus check instead:
+`scripts/fetch_nih_original_images.py` and `scripts/benchmark_kad.py`'s schema-2
+provenance loader accept original-pixel evidence only once a file's SHA-256 agrees
+across at least two independently-operated sources. Running that path against the
+full NIH release for real, and using it to unlock a locked-evaluation run, is still
+outstanding — only the ingestion script and its validator are implemented so far.
 
 KAD licensing also remains an explicit release blocker: its reviewed code commit has an
 MIT `LICENSE`, but separate terms for the downloadable checkpoint weights are not stated

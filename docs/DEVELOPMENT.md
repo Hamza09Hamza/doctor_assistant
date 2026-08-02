@@ -95,11 +95,18 @@ Historical mirror artifacts deliberately set `threshold_export_eligible=false`,
 `load_calibrated_thresholds(...)` rejects them even when every diagnostic candidate
 met its point-estimate constraints. No mirror-derived threshold may feed `Pipeline`.
 
-The current image-provenance schema also rejects a self-authored
-`original_nih_pixels=true` declaration. A trusted original-NIH ingestion receipt that
-verifies archive/source identity, exact selected bytes, and the canonical manifest
-must be implemented before the original-pixel acceptance and locked-test paths can be
-enabled.
+Schema-1 image provenance still rejects a self-authored `original_nih_pixels=true`
+declaration unconditionally. A second schema (schema-2) can assert original-pixel
+evidence, but only behind a multi-source consensus check: `scripts/fetch_nih_original_images.py`
+accepts a file only once its SHA-256 agrees across at least two independently-operated
+local source directories (no NIH-published per-file checksum manifest exists to pin
+against a single source), and hard-fails, naming the exact file, on any disagreement
+or insufficient source coverage. `scripts/benchmark_kad.py`'s `load_image_provenance`
+validates this schema-2 `archive_verification` block before accepting
+`original_nih_pixels=true`. The script verifies and ingests already-downloaded source
+copies; it does not perform the ~42GB download itself. Running it against the full NIH
+release from two or more real independent sources, and using its output to unlock a
+Gate 4 locked-evaluation run, remains a follow-up step.
 
 Evaluation samples default to
 `~/.cache/doctor_assistant/evaluation`. Override this with either

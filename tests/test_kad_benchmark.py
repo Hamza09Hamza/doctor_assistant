@@ -178,6 +178,66 @@ def _image_provenance_payload(
     return payload
 
 
+def _original_pixel_provenance_payload(
+    *,
+    filename: str,
+    output_sha256: str,
+    manifest_sha256: str,
+    width: int,
+    height: int,
+    cohort: str = "development",
+    agreeing_source_count: int = 2,
+    minimum_independent_sources: int = 2,
+    corroborating_sources: int = 1,
+) -> dict:
+    """A schema-2 provenance payload backed by multi-source SHA-256 consensus."""
+
+    split = "validation" if cohort == "development" else "test"
+    return {
+        "artifact_type": "doctor_assistant.nih_image_provenance",
+        "schema_version": 2,
+        "source": (
+            "NIH Clinical Center direct release, cross-verified against "
+            "independently-operated mirrors"
+        ),
+        "resolution": {"width": width, "height": height},
+        "original_nih_pixels": True,
+        "development_only": False,
+        "official_or_final_evidence_allowed": True,
+        "canonical_manifest": {
+            "sha256": manifest_sha256,
+            "cohort": cohort,
+            "rows_selected": 1,
+        },
+        "archive_verification": {
+            "method": "multi_source_sha256_consensus_v1",
+            "minimum_independent_sources": minimum_independent_sources,
+            "primary_source": {
+                "name": "NIH Clinical Center official release",
+                "identifier": "https://nihcc.app.box.com/v/ChestXray-NIHCC",
+            },
+            "corroborating_sources": [
+                {
+                    "name": "academictorrents (NIH Clinical Center attribution)",
+                    "identifier": (
+                        "infohash:557481faacd824c83fbf57dcf7b6da9383b3235a"
+                    ),
+                }
+                for _ in range(corroborating_sources)
+            ],
+            "agreement": "all_selected_files_sha256_identical_across_all_sources",
+        },
+        "images": [
+            {
+                "filename": filename,
+                "expert_split": split,
+                "output_sha256": output_sha256,
+                "agreeing_source_count": agreeing_source_count,
+            }
+        ],
+    }
+
+
 class KADBenchmarkManifestTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -891,6 +951,132 @@ class KADBenchmarkPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(
             ValueError,
             "ORIGINAL NIH PIXEL EVIDENCE DISABLED",
+        ):
+            load_image_provenance(path)
+
+    def test_verified_multi_source_original_pixel_provenance_is_accepted(
+        self,
+    ) -> None:
+        image_path = self.root / "00000001_000.png"
+        Image.fromarray(np.zeros((8, 9), dtype=np.uint8), mode="L").save(image_path)
+        image_hash = _file_sha256(image_path)
+        manifest_hash = "2" * 64
+        path = self.root / "pixels.json"
+        path.write_text(
+            json.dumps(
+                _original_pixel_provenance_payload(
+                    filename=image_path.name,
+                    output_sha256=image_hash,
+                    manifest_sha256=manifest_hash,
+                    width=9,
+                    height=8,
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        provenance = load_image_provenance(path)
+        self.assertEqual(provenance.schema_version, 2)
+        self.assertTrue(provenance.original_nih_pixels)
+        self.assertIsNotNone(provenance.archive_verification)
+
+        manifest = SimpleNamespace(
+            manifest_sha256=manifest_hash,
+            cohort="development",
+            sample_ids=(image_path.name,),
+            image_paths=(image_path,),
+            image_sha256=(image_hash,),
+        )
+        validate_image_provenance(provenance, manifest)
+
+    def test_original_pixel_provenance_rejects_insufficient_source_agreement(
+        self,
+    ) -> None:
+        path = self.root / "pixels.json"
+        path.write_text(
+            json.dumps(
+                _original_pixel_provenance_payload(
+                    filename="00000001_000.png",
+                    output_sha256="1" * 64,
+                    manifest_sha256="2" * 64,
+                    width=1024,
+                    height=1024,
+                    agreeing_source_count=1,
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "agreeing_source_count"):
+            load_image_provenance(path)
+
+    def test_original_pixel_provenance_rejects_too_few_corroborating_sources(
+        self,
+    ) -> None:
+        path = self.root / "pixels.json"
+        path.write_text(
+            json.dumps(
+                _original_pixel_provenance_payload(
+                    filename="00000001_000.png",
+                    output_sha256="1" * 64,
+                    manifest_sha256="2" * 64,
+                    width=1024,
+                    height=1024,
+                    corroborating_sources=0,
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "corroborating_sources"):
+            load_image_provenance(path)
+
+    def test_original_pixel_provenance_rejects_missing_archive_verification(
+        self,
+    ) -> None:
+        payload = _original_pixel_provenance_payload(
+            filename="00000001_000.png",
+            output_sha256="1" * 64,
+            manifest_sha256="2" * 64,
+            width=1024,
+            height=1024,
+        )
+        del payload["archive_verification"]
+        path = self.root / "pixels.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "archive_verification"):
+            load_image_provenance(path)
+
+    def test_schema_two_rejects_a_non_original_declaration(self) -> None:
+        payload = _original_pixel_provenance_payload(
+            filename="00000001_000.png",
+            output_sha256="1" * 64,
+            manifest_sha256="2" * 64,
+            width=1024,
+            height=1024,
+        )
+        payload["original_nih_pixels"] = False
+        path = self.root / "pixels.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "schema-2 provenance is reserved"):
+            load_image_provenance(path)
+
+    def test_unsupported_schema_version_is_rejected(self) -> None:
+        payload = _original_pixel_provenance_payload(
+            filename="00000001_000.png",
+            output_sha256="1" * 64,
+            manifest_sha256="2" * 64,
+            width=1024,
+            height=1024,
+        )
+        payload["schema_version"] = 3
+        path = self.root / "pixels.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaisesRegex(
+            ValueError, "unsupported image provenance schema_version"
         ):
             load_image_provenance(path)
 

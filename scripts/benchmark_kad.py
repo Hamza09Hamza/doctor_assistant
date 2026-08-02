@@ -189,6 +189,9 @@ class ImageProvenance:
     rows_selected: int
     output_sha256_by_filename: Mapping[str, str]
     expert_split_by_filename: Mapping[str, str]
+    schema_version: int = 1
+    # Populated only for schema_version 2 (verified original-pixel evidence).
+    archive_verification: Mapping[str, Any] | None = None
 
 
 def _canonical_json_sha256(value: Any) -> str:
@@ -998,76 +1001,14 @@ def load_manifest_metadata(
     }
 
 
-def load_image_provenance(path: str | Path) -> ImageProvenance:
-    """Load the explicit pixel-source declaration used by an expert run."""
+def _parse_provenance_records(
+    records: Any,
+    rows_selected: int,
+    *,
+    require_agreement_count: int | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Parse the ``images[]`` body shared by every provenance schema version."""
 
-    resolved = Path(path).expanduser().resolve()
-    if not resolved.is_file():
-        raise FileNotFoundError(f"image provenance artifact not found: {resolved}")
-    try:
-        data = json.loads(resolved.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"could not parse image provenance {resolved}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise ValueError("image provenance must be a JSON object")
-    if data.get("artifact_type") != "doctor_assistant.nih_image_provenance":
-        raise ValueError(
-            "image provenance artifact_type must be "
-            "'doctor_assistant.nih_image_provenance'"
-        )
-    if data.get("schema_version") != 1:
-        raise ValueError("unsupported image provenance schema_version; expected 1")
-    source = data.get("source")
-    if not isinstance(source, str) or not source.strip():
-        raise ValueError("image provenance source must be non-empty text")
-    resolution = data.get("resolution")
-    if not isinstance(resolution, dict) or set(resolution) != {"width", "height"}:
-        raise ValueError(
-            "image provenance resolution must contain exactly width and height"
-        )
-    width = resolution["width"]
-    height = resolution["height"]
-    if (
-        isinstance(width, bool)
-        or isinstance(height, bool)
-        or not isinstance(width, int)
-        or not isinstance(height, int)
-        or width <= 0
-        or height <= 0
-    ):
-        raise ValueError("image provenance width/height must be positive integers")
-    original = data.get("original_nih_pixels")
-    if not isinstance(original, bool):
-        raise ValueError("image provenance original_nih_pixels must be boolean")
-    if original:
-        raise ValueError(
-            "ORIGINAL NIH PIXEL EVIDENCE DISABLED: schema-1 provenance is a "
-            "self-declaration and cannot prove NIH archive origin. Keep "
-            "original_nih_pixels=false until a trusted original-pixel ingestion "
-            "receipt with archive/source verification is implemented."
-        )
-    canonical_manifest = _require_object(
-        data.get("canonical_manifest"), "image provenance canonical_manifest"
-    )
-    manifest_hash = _require_sha256(
-        canonical_manifest.get("sha256"),
-        "image provenance canonical_manifest.sha256",
-    )
-    cohort = canonical_manifest.get("cohort")
-    if cohort not in {"development", "test"}:
-        raise ValueError(
-            "image provenance canonical_manifest.cohort must be development or test"
-        )
-    rows_selected = canonical_manifest.get("rows_selected")
-    if (
-        isinstance(rows_selected, bool)
-        or not isinstance(rows_selected, int)
-        or rows_selected <= 0
-    ):
-        raise ValueError(
-            "image provenance canonical_manifest.rows_selected must be positive"
-        )
-    records = data.get("images")
     if not isinstance(records, list) or len(records) != rows_selected:
         raise ValueError(
             "image provenance images must contain exactly rows_selected records"
@@ -1093,8 +1034,186 @@ def load_image_provenance(path: str | Path) -> ImageProvenance:
             f"image provenance images[{index}].output_sha256",
         )
         expert_splits[filename] = split
+        if require_agreement_count is not None:
+            count = record.get("agreeing_source_count")
+            if (
+                isinstance(count, bool)
+                or not isinstance(count, int)
+                or count < require_agreement_count
+            ):
+                raise ValueError(
+                    f"image provenance images[{index}].agreeing_source_count must "
+                    f"be an integer >= {require_agreement_count}"
+                )
+    return output_hashes, expert_splits
 
-    if not original:
+
+def _validate_archive_verification(verification: Any) -> int:
+    """Validate a schema-2 multi-source consensus block; return its minimum count.
+
+    Original-pixel evidence is accepted only when at least ``minimum_independent_sources``
+    (>= 2) separately-operated sources agree, byte-for-byte, on every selected file. No
+    NIH-published per-file checksum manifest is publicly available, so a single source --
+    however official-looking -- is never sufficient on its own.
+    """
+
+    block = _require_object(verification, "image provenance archive_verification")
+    if block.get("method") != "multi_source_sha256_consensus_v1":
+        raise ValueError(
+            "image provenance archive_verification.method must be "
+            "'multi_source_sha256_consensus_v1'"
+        )
+    minimum = block.get("minimum_independent_sources")
+    if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 2:
+        raise ValueError(
+            "image provenance archive_verification.minimum_independent_sources "
+            "must be an integer >= 2"
+        )
+    primary = _require_object(
+        block.get("primary_source"), "archive_verification.primary_source"
+    )
+    if not isinstance(primary.get("name"), str) or not primary["name"].strip():
+        raise ValueError("archive_verification.primary_source.name is required")
+    corroborating = block.get("corroborating_sources")
+    if not isinstance(corroborating, list) or len(corroborating) < minimum - 1:
+        raise ValueError(
+            "archive_verification.corroborating_sources must list at least "
+            "minimum_independent_sources - 1 independently-operated sources"
+        )
+    for index, source in enumerate(corroborating):
+        source_obj = _require_object(
+            source, f"archive_verification.corroborating_sources[{index}]"
+        )
+        if (
+            not isinstance(source_obj.get("name"), str)
+            or not source_obj["name"].strip()
+            or not isinstance(source_obj.get("identifier"), str)
+            or not source_obj["identifier"].strip()
+        ):
+            raise ValueError(
+                f"archive_verification.corroborating_sources[{index}] must have a "
+                "non-empty name and identifier"
+            )
+    if (
+        block.get("agreement")
+        != "all_selected_files_sha256_identical_across_all_sources"
+    ):
+        raise ValueError(
+            "archive_verification.agreement must be "
+            "'all_selected_files_sha256_identical_across_all_sources'"
+        )
+    return minimum
+
+
+def load_image_provenance(path: str | Path) -> ImageProvenance:
+    """Load the explicit pixel-source declaration used by an expert run.
+
+    Two schema versions are supported. Schema 1 is a bare self-declaration and can
+    never assert ``original_nih_pixels=true`` -- it exists only for the diagnostic
+    development mirror. Schema 2 can assert original-pixel evidence, but only when
+    backed by an ``archive_verification`` block recording per-file SHA-256 agreement
+    across at least two independently-operated sources. Neither schema accepts a
+    bare, unverified claim.
+    """
+
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"image provenance artifact not found: {resolved}")
+    try:
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not parse image provenance {resolved}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("image provenance must be a JSON object")
+    if data.get("artifact_type") != "doctor_assistant.nih_image_provenance":
+        raise ValueError(
+            "image provenance artifact_type must be "
+            "'doctor_assistant.nih_image_provenance'"
+        )
+    schema_version = data.get("schema_version")
+    if schema_version not in (1, 2):
+        raise ValueError(
+            "unsupported image provenance schema_version; expected 1 or 2"
+        )
+    source = data.get("source")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError("image provenance source must be non-empty text")
+    resolution = data.get("resolution")
+    if not isinstance(resolution, dict) or set(resolution) != {"width", "height"}:
+        raise ValueError(
+            "image provenance resolution must contain exactly width and height"
+        )
+    width = resolution["width"]
+    height = resolution["height"]
+    if (
+        isinstance(width, bool)
+        or isinstance(height, bool)
+        or not isinstance(width, int)
+        or not isinstance(height, int)
+        or width <= 0
+        or height <= 0
+    ):
+        raise ValueError("image provenance width/height must be positive integers")
+    original = data.get("original_nih_pixels")
+    if not isinstance(original, bool):
+        raise ValueError("image provenance original_nih_pixels must be boolean")
+    if original and schema_version == 1:
+        raise ValueError(
+            "ORIGINAL NIH PIXEL EVIDENCE DISABLED: schema-1 provenance is a "
+            "self-declaration and cannot prove NIH archive origin. Keep "
+            "original_nih_pixels=false until a trusted original-pixel ingestion "
+            "receipt with archive/source verification is implemented."
+        )
+    if not original and schema_version == 2:
+        raise ValueError(
+            "schema-2 provenance is reserved for verified original-pixel evidence; "
+            "use schema-1 for the diagnostic development mirror instead"
+        )
+    canonical_manifest = _require_object(
+        data.get("canonical_manifest"), "image provenance canonical_manifest"
+    )
+    manifest_hash = _require_sha256(
+        canonical_manifest.get("sha256"),
+        "image provenance canonical_manifest.sha256",
+    )
+    cohort = canonical_manifest.get("cohort")
+    if cohort not in {"development", "test"}:
+        raise ValueError(
+            "image provenance canonical_manifest.cohort must be development or test"
+        )
+    rows_selected = canonical_manifest.get("rows_selected")
+    if (
+        isinstance(rows_selected, bool)
+        or not isinstance(rows_selected, int)
+        or rows_selected <= 0
+    ):
+        raise ValueError(
+            "image provenance canonical_manifest.rows_selected must be positive"
+        )
+
+    archive_verification: dict[str, Any] | None = None
+    if schema_version == 2:
+        minimum_sources = _validate_archive_verification(
+            data.get("archive_verification")
+        )
+        output_hashes, expert_splits = _parse_provenance_records(
+            data.get("images"),
+            rows_selected,
+            require_agreement_count=minimum_sources,
+        )
+        if (
+            data.get("development_only") is not False
+            or data.get("official_or_final_evidence_allowed") is not True
+        ):
+            raise ValueError(
+                "schema-2 original-pixel provenance must set "
+                "development_only=false and official_or_final_evidence_allowed=true"
+            )
+        archive_verification = data.get("archive_verification")
+    else:
+        output_hashes, expert_splits = _parse_provenance_records(
+            data.get("images"), rows_selected
+        )
         if (
             data.get("development_only") is not True
             or data.get("official_or_final_evidence_allowed") is not False
@@ -1111,7 +1230,7 @@ def load_image_provenance(path: str | Path) -> ImageProvenance:
             raise ValueError(
                 "non-original image provenance is not the pinned development mirror"
             )
-        for index, record in enumerate(records):
+        for index, record in enumerate(data.get("images")):
             if record.get("mirror_revision") != _DEVELOPMENT_IMAGE_REVISION:
                 raise ValueError(
                     f"image provenance images[{index}].mirror_revision is not pinned"
@@ -1128,6 +1247,8 @@ def load_image_provenance(path: str | Path) -> ImageProvenance:
         rows_selected=rows_selected,
         output_sha256_by_filename=output_hashes,
         expert_split_by_filename=expert_splits,
+        schema_version=schema_version,
+        archive_verification=archive_verification,
     )
 
 
