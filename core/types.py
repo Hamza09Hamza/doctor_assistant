@@ -74,6 +74,13 @@ class Prediction:
     # Explainability heatmap (e.g. Grad-CAM), same spatial shape as the input.
     heatmap: "torch.Tensor | None" = None
     meta: ScanMetadata = field(default_factory=ScanMetadata)
+    # Provenance: who produced this and with what. Stamped by the orchestrator from
+    # the expert's own declared `version`/`preprocessing_version` attributes when
+    # present; absent stays None rather than being guessed. `execution_id` ties this
+    # prediction (and the findings derived from it) to one `ExpertExecution` record.
+    expert_version: str | None = None
+    preprocessing_version: str | None = None
+    execution_id: str | None = None
 
     @property
     def top_label(self) -> str | None:
@@ -85,3 +92,19 @@ class Prediction:
     def top_score(self) -> float | None:
         label = self.top_label
         return None if label is None else self.class_probs[label]
+
+
+@dataclass
+class ExpertExecution:
+    """One audit-trail entry for a single expert being run on a single scan.
+
+    Recorded for every routed expert, success or failure, so a caller can see the
+    whole panel that was attempted — not just the ones that produced a `Prediction`.
+    """
+
+    execution_id: str
+    expert: str
+    status: str  # "completed" | "failed"
+    expert_version: str | None = None
+    preprocessing_version: str | None = None
+    error: str | None = None

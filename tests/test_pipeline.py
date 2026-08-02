@@ -10,7 +10,7 @@ from core.types import Prediction, Scan, ScanMetadata
 from models.backbones import Backbone
 from models.experts import BaseExpert
 from models.heads import ClassificationHead
-from pipeline import Pipeline, PipelineExecutionError
+from pipeline import AnalysisStatus, Pipeline, PipelineExecutionError
 from reporting import GridZoneLocalizer, Reporter
 from routing import ExpertRegistry, ModalityRouter
 
@@ -54,6 +54,18 @@ class ObservingExpert:
             class_probs={"Mass": 0.1},
             meta=scan.meta,
         )
+
+
+class VersionedExpert:
+    name = "versioned"
+    modality = Modality.XRAY
+    body_part = BodyPart.CHEST
+    class_names = ["Effusion"]
+    version = "versioned-expert:v1"
+    preprocessing_version = "prep:v1"
+
+    def predict(self, scan):
+        return Prediction(expert=self.name, class_probs={"Effusion": 0.9}, meta=scan.meta)
 
 
 class SegmentationExpert:
@@ -123,6 +135,42 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("broken", result.expert_failures)
         self.assertEqual(result.scan.meta.extra, {})
         self.assertTrue(result.verification.ok, result.verification.summary())
+
+        self.assertEqual(result.status, AnalysisStatus.PARTIAL)
+        self.assertTrue(result.analysis_id)
+        by_expert = {e.expert: e for e in result.expert_executions}
+        self.assertEqual({"mutator", "observer", "broken"}, set(by_expert))
+        self.assertEqual(by_expert["mutator"].status, "completed")
+        self.assertEqual(by_expert["observer"].status, "completed")
+        self.assertEqual(by_expert["broken"].status, "failed")
+        self.assertIsNotNone(by_expert["broken"].error)
+        self.assertIsNone(by_expert["broken"].expert_version)
+        execution_ids = {e.execution_id for e in result.expert_executions}
+        self.assertEqual(len(execution_ids), 3)  # all unique
+
+    def test_provenance_is_stamped_on_predictions_and_findings(self) -> None:
+        registry = ExpertRegistry()
+        registry.register(VersionedExpert())
+        pipe = Pipeline(ModalityRouter(registry), reporter=Reporter(llm=None), thresholds=0.5)
+
+        result = pipe.analyze_scan(_scan())
+
+        self.assertEqual(result.status, AnalysisStatus.COMPLETE)
+        self.assertEqual(len(result.expert_executions), 1)
+        execution = result.expert_executions[0]
+        self.assertEqual(execution.status, "completed")
+        self.assertEqual(execution.expert_version, "versioned-expert:v1")
+        self.assertEqual(execution.preprocessing_version, "prep:v1")
+
+        [prediction] = result.predictions
+        self.assertEqual(prediction.expert_version, "versioned-expert:v1")
+        self.assertEqual(prediction.preprocessing_version, "prep:v1")
+        self.assertEqual(prediction.execution_id, execution.execution_id)
+
+        self.assertTrue(result.findings)
+        for finding in result.findings:
+            self.assertEqual(finding.execution_id, execution.execution_id)
+            self.assertEqual(finding.canonical_label, "effusion")
 
     def test_pipeline_computes_gradcam_when_localization_is_requested(self) -> None:
         backbone = TinyBackbone()

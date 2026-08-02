@@ -1149,6 +1149,12 @@ class KAD512Expert:
         self._query_decoder: KADQueryDecoder | None = None
         self._text_features: Tensor | None = None
         self.source_metadata: dict[str, Any] = {}
+        # Provenance: the weight source path plus the pinned Med-KEBERT revision. The
+        # richer checksum identity in `source_metadata` is only known after the lazy
+        # load, so this stays the coarser, always-available identity string.
+        self.version = (
+            f"kad512:{query_pack_path or checkpoint_path}:bert={bert_revision}"
+        )
 
     def _load_query_pack(self) -> tuple[Mapping[str, Tensor], Mapping[str, Tensor], Tensor]:
         pack = _load_torch_mapping(

@@ -103,6 +103,8 @@ class TotalSegmentatorExpert:
         self.roi_subset = list(roi_subset) if roi_subset else None
         self.min_volume_ml = float(min_volume_ml)
         self.quiet = quiet
+        # Provenance: TotalSegmentator ships one released weight set per model size.
+        self.version = f"totalsegmentator:{'fast_3mm' if fast else 'full'}"
         # Advertised vocabulary (used by the verifier's "named-but-not-present" check).
         self.class_names: list[str] = list(self.roi_subset) if self.roi_subset else []
 

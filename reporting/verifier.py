@@ -29,6 +29,7 @@ from collections.abc import Sequence
 
 from .findings import Finding
 from .reporter import LLMClient, StructuredReport
+from .vocabulary import canonicalize
 
 # Numbers that carry a unit we measure, e.g. "12 mm", "3.4 mL", "score 0.87", "42%",
 # or "3 foci". Count nouns are included so small counts are not mistaken for prose.
@@ -246,7 +247,11 @@ class Verifier:
 
     @staticmethod
     def _normalize(label: str) -> str:
-        return label.replace("_", " ").strip().lower()
+        # Route through the shared canonical vocabulary (so e.g. a typo'd or
+        # differently-cased label still normalizes consistently with guidelines.py),
+        # then back to space-separated form to match against prose text, which never
+        # contains underscores.
+        return canonicalize(label).replace("_", " ")
 
     # -- optional LLM entailment --------------------------------------------
     def _llm_entailment(

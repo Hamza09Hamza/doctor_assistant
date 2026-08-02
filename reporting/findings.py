@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .vocabulary import canonicalize
+
 if TYPE_CHECKING:  # keep torch out of import path for cheap/offline use
     import torch
 
@@ -55,6 +57,12 @@ class Finding:
 
     # --- provenance, so a report sentence can be traced to its source ---
     source: str = ""                        # "classification+gradcam", "segmentation", ...
+    # Stable concept code from reporting.vocabulary (e.g. "effusion", "nodule_or_mass"),
+    # so the same underlying finding is recognizable across experts that spell the raw
+    # `label` differently. See reporting/vocabulary.py for why this is never guessed
+    # onto a narrower or broader concept than the expert actually reported.
+    canonical_label: str | None = None
+    execution_id: str | None = None         # which ExpertExecution produced this
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_facts(self) -> dict[str, Any]:
@@ -127,6 +135,7 @@ def findings_from_classification(
                 laterality=laterality,
                 location=location,
                 source="classification+gradcam" if laterality or location else "classification",
+                canonical_label=canonicalize(label),
             )
         )
     # most clinically salient first
@@ -213,6 +222,7 @@ def findings_from_mask(
                 laterality=laterality,
                 location=location,
                 source="segmentation",
+                canonical_label=canonicalize(label),
                 extra=extra,
             )
         )

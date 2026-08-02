@@ -210,6 +210,15 @@ class MSKFractureExpert:
         self.device = device
         self.class_names: list[str] = list(GRAZPEDWRI_LABELS)
         self._model = None
+        # Provenance: the checksum of whichever weights this instance will load — the
+        # verified default's known SHA-256, a caller-supplied one, or an explicit
+        # "unverified" marker rather than a fabricated identity.
+        if weights_sha256 is not None:
+            self.version = f"msk_fracture_yolov8:{weights_sha256}"
+        elif weights_path is None:
+            self.version = f"msk_fracture_yolov8:{_WEIGHTS_SHA256}"
+        else:
+            self.version = "msk_fracture_yolov8:custom_unverified"
 
     def _ensure_loaded(self) -> None:
         if self._model is not None:

@@ -157,6 +157,9 @@ class Maira2Expert:
         self.model_id = model_id
         self.max_new_tokens = max_new_tokens
         self.device = device
+        # Provenance: the HF repo id actually loaded (no pinned revision here today, so
+        # this is only as specific as `model_id` itself — never fabricated further).
+        self.version = model_id
         self.class_names: list[str] = list(_LABEL_KEYWORDS)
         self._model = None
         self._processor = None

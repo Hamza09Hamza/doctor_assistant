@@ -21,6 +21,7 @@ from .reporter import (
     StructuredReport,
 )
 from .verifier import Verifier, VerificationResult
+from .vocabulary import ALIASES, CANONICAL_LABELS, canonicalize
 
 __all__ = [
     "Finding",
@@ -38,4 +39,7 @@ __all__ = [
     "GuidelineEngine",
     "Recommendation",
     "Urgency",
+    "canonicalize",
+    "CANONICAL_LABELS",
+    "ALIASES",
 ]

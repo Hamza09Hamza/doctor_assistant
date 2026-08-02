@@ -6,7 +6,7 @@ import numpy as np
 
 from core.enums import BodyPart, Modality
 from core.types import ScanMetadata
-from reporting.findings import Finding, findings_from_mask
+from reporting.findings import Finding, findings_from_classification, findings_from_mask
 from reporting.guidelines import GuidelineEngine
 from reporting.reporter import Reporter, StructuredReport
 from reporting.verifier import Verifier
@@ -123,6 +123,30 @@ class ReportingTests(unittest.TestCase):
             any("ungrounded number '1.00'" in flag for flag in verdict.flags),
             verdict.summary(),
         )
+
+    def test_classification_findings_carry_a_canonical_label(self) -> None:
+        findings = findings_from_classification(
+            {"Nodule_or_mass": 0.9, "Airspace_opacity": 0.7},
+            thresholds=0.5,
+        )
+        by_label = {f.label: f for f in findings}
+        self.assertEqual(by_label["Nodule_or_mass"].canonical_label, "nodule_or_mass")
+        self.assertEqual(by_label["Airspace_opacity"].canonical_label, "airspace_opacity")
+
+    def test_combined_kad_endpoints_get_their_own_recommendation(self) -> None:
+        # A KAD-flagged "Nodule_or_mass" must not fall through to the Fleischner
+        # nodule-size-banding text, since it may not be a nodule at all.
+        nodule_or_mass = GuidelineEngine().recommend(
+            [Finding(label="Nodule_or_mass", probability=0.9, size_mm=9.0)]
+        )
+        self.assertEqual(len(nodule_or_mass), 1)
+        self.assertNotIn("Fleischner", nodule_or_mass[0].text)
+
+        airspace = GuidelineEngine().recommend(
+            [Finding(label="Airspace_opacity", probability=0.8)]
+        )
+        self.assertEqual(len(airspace), 1)
+        self.assertIn("airspace opacity", airspace[0].text.lower())
 
 
 if __name__ == "__main__":

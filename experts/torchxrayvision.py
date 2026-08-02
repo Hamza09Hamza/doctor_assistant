@@ -71,6 +71,8 @@ class TorchXRayVisionExpert:
         self.weights: tuple[str, ...] = (weights,) if isinstance(weights, str) else tuple(weights)
         self.resolution = int(resolution)
         self.device = device
+        # Provenance: the exact released weight set(s) this instance loads.
+        self.version = f"torchxrayvision:{'+'.join(self.weights)}"
         # Advertised vocabulary (the verifier's "named-but-not-present" check keys off this).
         self.class_names: list[str] = list(labels)
         self._models: list = []

@@ -11,10 +11,7 @@ venv/
 env/
 .ipynb_checkpoints/
 *.ipynb
-# Exception: system_test notebook has no credentials — safe to track
-!notebooks/system_test.ipynb
-!notebooks/classifier_evaluation_colab.ipynb
-!notebooks/chest_classifier_build_colab.ipynb
+
 *.egg/
 
 # Data & weights (never commit raw scans or trained models)
@@ -35,7 +32,7 @@ checkpoints/
 
 # Fetched test samples (downloaded on demand by scripts/fetch_samples.py)
 samples/
-
+results/
 # Logs / outputs
 runs/
 logs/

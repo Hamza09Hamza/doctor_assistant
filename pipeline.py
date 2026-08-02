@@ -14,11 +14,13 @@ conventional next step. No stage invents facts another stage didn't supply.
 from __future__ import annotations
 
 import copy
+import uuid
 import warnings
 from dataclasses import dataclass, field
+from enum import Enum
 
 from core.interfaces import ExpertModel, Router
-from core.types import Prediction, Scan
+from core.types import ExpertExecution, Prediction, Scan
 from ingest.loaders import load_scan
 from reporting.findings import (
     Finding,
@@ -29,6 +31,14 @@ from reporting.findings import (
 from reporting.guidelines import GuidelineEngine, Recommendation, Urgency
 from reporting.reporter import Reporter, StructuredReport
 from reporting.verifier import Verifier, VerificationResult
+
+
+class AnalysisStatus(str, Enum):
+    """Whether every routed expert completed, computed from `expert_failures` — never
+    stored separately, so it can't drift out of sync with the data that determines it."""
+
+    COMPLETE = "complete"
+    PARTIAL = "partial"
 
 
 @dataclass
@@ -45,10 +55,19 @@ class AnalysisResult:
     rejected_report: StructuredReport | None = None
     rejected_verification: VerificationResult | None = None
     recommendations: list[Recommendation] = field(default_factory=list)
+    # Provenance: one ID per `analyze_scan` call, and one `ExpertExecution` audit
+    # entry per routed expert (success or failure) — a superset of `expert_failures`
+    # that also records what succeeded, with what version, under what execution_id.
+    analysis_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    expert_executions: list[ExpertExecution] = field(default_factory=list)
 
     @property
     def triage_urgency(self) -> Urgency:
         return max((r.urgency for r in self.recommendations), default=Urgency.ROUTINE)
+
+    @property
+    def status(self) -> AnalysisStatus:
+        return AnalysisStatus.PARTIAL if self.expert_failures else AnalysisStatus.COMPLETE
 
     def to_text(self) -> str:
         """Human-readable dump: report + verification verdict + recommendations."""
@@ -121,7 +140,12 @@ class Pipeline:
             # un-authenticated HF repo (MAIRA-2), an OOM, a network drop. Warn with the
             # expert name + error and carry on; the remaining experts still produce a
             # report. A failed expert is NOT recorded in result.experts/predictions, so
-            # the summary reflects only what actually ran.
+            # the summary reflects only what actually ran (result.expert_executions
+            # records the attempt either way, for audit).
+            execution_id = uuid.uuid4().hex
+            # Self-declared, optional — absent stays None rather than being guessed.
+            expert_version = getattr(expert, "version", None)
+            preprocessing_version = getattr(expert, "preprocessing_version", None)
             try:
                 # Several pretrained adapters attach model-specific data to
                 # ScanMetadata.extra. Give every expert a private metadata object so one
@@ -131,6 +155,16 @@ class Pipeline:
                 findings = self._findings_for(expert, pred, expert_scan)
             except Exception as exc:  # noqa: BLE001 — deliberately broad; isolate the expert
                 result.expert_failures[expert.name] = f"{type(exc).__name__}: {exc}"
+                result.expert_executions.append(
+                    ExpertExecution(
+                        execution_id=execution_id,
+                        expert=expert.name,
+                        status="failed",
+                        expert_version=expert_version,
+                        preprocessing_version=preprocessing_version,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
                 warnings.warn(
                     f"Pipeline: expert {expert.name!r} failed and was skipped "
                     f"({type(exc).__name__}: {exc}).",
@@ -138,6 +172,20 @@ class Pipeline:
                     stacklevel=2,
                 )
                 continue
+            pred.execution_id = execution_id
+            pred.expert_version = pred.expert_version or expert_version
+            pred.preprocessing_version = pred.preprocessing_version or preprocessing_version
+            for finding in findings:
+                finding.execution_id = execution_id
+            result.expert_executions.append(
+                ExpertExecution(
+                    execution_id=execution_id,
+                    expert=expert.name,
+                    status="completed",
+                    expert_version=pred.expert_version,
+                    preprocessing_version=pred.preprocessing_version,
+                )
+            )
             successful_experts.append(expert)
             result.experts.append(expert.name)
             result.predictions.append(pred)

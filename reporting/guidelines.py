@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from enum import IntEnum
 
 from .findings import Finding
+from .vocabulary import canonicalize
 
 
 class Urgency(IntEnum):
@@ -99,6 +100,19 @@ _CHEST_GUIDELINES: dict[str, tuple[str, Urgency]] = {
         "Surgical correlation if symptomatic.",
         Urgency.ROUTINE,
     ),
+    "nodule_or_mass": (
+        "Combined nodule-or-mass finding from a model that does not distinguish the "
+        "two; further characterization (dedicated CT, comparison with any prior "
+        "imaging) is advised before applying either nodule- or mass-specific "
+        "follow-up criteria.",
+        Urgency.PROMPT,
+    ),
+    "airspace_opacity": (
+        "Airspace opacity of undetermined cause; correlate clinically for infection, "
+        "aspiration, or other consolidative process and consider follow-up imaging "
+        "after treatment to confirm resolution.",
+        Urgency.PROMPT,
+    ),
     # Nodule handled specially (size-banded) in `_nodule_recommendation`.
 }
 
@@ -147,7 +161,7 @@ class GuidelineEngine:
         recs: list[Recommendation] = []
         seen: set[str] = set()
         for f in present:
-            key = f.label.strip().lower()
+            key = canonicalize(f.label)
             # Several independent readers may produce the same canonical finding.
             # Preserve all evidence in AnalysisResult.findings, but do not repeat the
             # same action recommendation for every reader.
