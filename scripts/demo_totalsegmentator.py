@@ -46,7 +46,13 @@ ZENODO_RECORD_URL = f"https://zenodo.org/api/records/{ZENODO_RECORD_ID}"
 
 
 def _download_with_retries(url: str, destination: Path, *, attempts: int = 5) -> None:
-    """Zenodo has been flaky (observed 504s); resumable, retried download."""
+    """Zenodo has been flaky (observed 504s); resumable, retried download.
+
+    Prints progress every ~200MB -- a multi-GB download with zero intermediate output
+    is indistinguishable from a hang when run non-interactively (e.g. piped through a
+    notebook cell's subprocess call); this is what actually happened on the first real
+    run, 10+ minutes of silence that was really just this loop working.
+    """
     import requests
 
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -57,10 +63,20 @@ def _download_with_retries(url: str, destination: Path, *, attempts: int = 5) ->
             with requests.get(url, headers=headers, stream=True, timeout=60) as response:
                 if response.status_code not in (200, 206):
                     response.raise_for_status()
+                total = response.headers.get("Content-Range", "").split("/")[-1]
+                total_bytes = int(total) if total.isdigit() else None
                 mode = "ab" if existing and response.status_code == 206 else "wb"
+                written = existing
+                last_reported_mb = written // (200 * 1024 * 1024)
                 with destination.open(mode) as handle:
                     for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
                         handle.write(chunk)
+                        written += len(chunk)
+                        current_mb = written // (200 * 1024 * 1024)
+                        if current_mb != last_reported_mb:
+                            last_reported_mb = current_mb
+                            pct = f" ({100 * written / total_bytes:.0f}%)" if total_bytes else ""
+                            print(f"  ... {written / 1024 / 1024:.0f}MB downloaded{pct}")
             return
         except Exception as exc:  # noqa: BLE001 -- deliberately broad, this is a demo script
             print(f"Download attempt {attempt}/{attempts} failed: {exc}")
@@ -120,10 +136,14 @@ def main() -> int:
         else:
             print(f"Reusing already-downloaded zip at {zip_path}")
 
-        print(f"Extracting to {extract_dir} ...")
         extract_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(zip_path) as archive:
-            archive.extractall(extract_dir)
+            members = archive.infolist()
+            print(f"Extracting {len(members)} files to {extract_dir} ...")
+            for index, member in enumerate(members, start=1):
+                archive.extract(member, extract_dir)
+                if index % 500 == 0 or index == len(members):
+                    print(f"  ... {index}/{len(members)} files extracted")
     else:
         print(f"Reusing already-extracted data at {extract_dir}")
 
