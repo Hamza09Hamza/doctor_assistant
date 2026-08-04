@@ -31,11 +31,14 @@ import hashlib
 import importlib.metadata
 import json
 import shutil
+import subprocess
 import sys
 import time
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event, Thread
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -48,12 +51,44 @@ ZENODO_FILENAME = "Totalsegmentator_dataset_small_v201.zip"
 ZENODO_MD5 = "6b5524af4b15e6ba06ef2d700c0c73e0"
 
 
+@contextmanager
+def _heartbeat(message: str, *, every_seconds: float = 30.0):
+    """Keep notebook users informed while a third-party model call is quiet."""
+    stopped = Event()
+    started = time.monotonic()
+
+    def report() -> None:
+        while not stopped.wait(every_seconds):
+            elapsed_minutes = (time.monotonic() - started) / 60.0
+            print(f"  ... {message} ({elapsed_minutes:.1f} minutes elapsed)", flush=True)
+
+    thread = Thread(target=report, name="totalsegmentator-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        thread.join(timeout=1.0)
+
+
 def _hash_file(path: Path, algorithm: str = "sha256") -> str:
     digest = hashlib.new(algorithm)
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _repository_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=_REPO_ROOT,
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return f"unavailable ({type(exc).__name__})"
 
 
 def _download_with_retries(url: str, destination: Path, *, attempts: int = 5) -> None:
@@ -353,6 +388,14 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    script_path = Path(__file__).resolve()
+    print("=== TotalSegmentator visual-proof process started ===", flush=True)
+    print(f"Repository commit: {_repository_commit()}", flush=True)
+    print(f"Script path:       {script_path}", flush=True)
+    print(f"Script SHA-256:    {_hash_file(script_path)}", flush=True)
+    print(f"Python:            {sys.executable}", flush=True)
+    print(f"Arguments:         {sys.argv[1:]}", flush=True)
+
     cache_dir = args.drive_cache.resolve()
     cache_dir.mkdir(parents=True, exist_ok=True)
     archive_path = _ensure_archive(cache_dir)
@@ -377,17 +420,18 @@ def main() -> int:
             flush=True,
         )
         started = time.monotonic()
-        result = totalsegmentator(
-            input=local_ct,
-            output=local_seg,  # ml=True requires a file path, not a directory
-            ml=True,
-            fast=args.fast,
-            device=args.device,
-            task="total",
-            statistics=local_result_dir / "totalsegmentator_statistics.json",
-            statistics_extra=True,
-            report=local_result_dir / "totalsegmentator_run_report.json",
-        )
+        with _heartbeat("TotalSegmentator is still working"):
+            result = totalsegmentator(
+                input=local_ct,
+                output=local_seg,  # ml=True requires a file path, not a directory
+                ml=True,
+                fast=args.fast,
+                device=args.device,
+                task="total",
+                statistics=local_result_dir / "totalsegmentator_statistics.json",
+                statistics_extra=True,
+                report=local_result_dir / "totalsegmentator_run_report.json",
+            )
         _seg_img, _statistics = result
         inference_seconds = time.monotonic() - started
     else:
