@@ -11,6 +11,12 @@ venv/
 env/
 .ipynb_checkpoints/
 *.ipynb
+# ...except the canonical, deliberately-committed notebooks this project actually
+# ships (notebooks/*.ipynb) -- the blanket rule above is for scratch/exploratory
+# notebooks elsewhere, not these. A new file under notebooks/ silently failed to be
+# tracked once already because `git add -A` skips gitignored paths without erroring;
+# this exception exists specifically so that can't happen again.
+!notebooks/*.ipynb
 
 *.egg/
 
