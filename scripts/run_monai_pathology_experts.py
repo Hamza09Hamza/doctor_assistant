@@ -507,53 +507,353 @@ def run_brain_tumor(args) -> dict:
 # card states it was trained and validated on. Its 9 recorded nodule boxes in that
 # split file are an exact coordinate match to LUNA16's public annotations.csv, ruling
 # out a UID collision. The model has literally seen this scan's ground truth in
-# training. No detection metric on this case can ever be reported as evidence -- a
-# different, split-disjoint LIDC case is required, not a workaround here.
-LUNG_NODULE_TEST_SERIES_UID = "1.3.6.1.4.1.14519.5.2.1.6279.6001.195557219224169985110295082004"
+# training. Kept here only as a documented dead end -- do not resurrect this UID.
+CONTAMINATED_LIDC_0686_SERIES_UID = (
+    "1.3.6.1.4.1.14519.5.2.1.6279.6001.195557219224169985110295082004"
+)
+
+# Replacement case: LIDC-IDRI-0672. Verified absent from LUNA16's entire 888-scan corpus
+# (checked its CT SeriesInstanceUID against every row of LUNA16's public annotations.csv
+# AND candidates.csv -- the latter covers all 888 scans including the ~287 with no
+# annotated nodule, not just the 601 that have one -- zero hits in either file). LUNA16
+# excludes this case for a documented data-quality reason (slice thickness/spacing), not
+# a case-quality one. TCIA lists a 462-slice CT plus four radiologist DICOM SEG series
+# (one per reader) for this study -- the same "DICOM-LIDC-IDRI-Nodules" structure the
+# project already consumes for 0686, just never queried by LUNA16.
+LUNG_NODULE_PATIENT_ID = "LIDC-IDRI-0672"
+LUNG_NODULE_STUDY_UID = "1.3.6.1.4.1.14519.5.2.1.6279.6001.318267749315379295095253644829"
+LUNG_NODULE_CT_SERIES_UID = "1.3.6.1.4.1.14519.5.2.1.6279.6001.329334252028672866365623335798"
+LUNG_NODULE_CT_INSTANCE_COUNT = 462
+LUNG_NODULE_READER_SEG_SERIES_UIDS = {
+    "reader1": "1.2.276.0.7230010.3.1.3.0.46200.1553331067.495191",
+    "reader2": "1.2.276.0.7230010.3.1.3.0.46202.1553331078.533827",
+    "reader3": "1.2.276.0.7230010.3.1.3.0.46205.1553331089.466011",
+    "reader4": "1.2.276.0.7230010.3.1.3.0.46244.1553331100.429082",
+}
+
+# LUNA16's own reference standard requires >= 3 of 4 readers to agree a lesion is a real
+# nodule; matched here rather than treating every single-reader mark as ground truth.
+LUNG_NODULE_MIN_READER_CONSENSUS = 3
+# A single operating point for reporting TP/FP/FN, not a full FROC sweep -- one scan
+# cannot produce a false-positive-per-scan curve. Chosen as a plain "more likely nodule
+# than not" cutoff; the manifest also records every raw detection so a different cutoff
+# can be re-applied without re-running inference.
+LUNG_NODULE_SCORE_THRESHOLD = 0.3
+
+
+def _idc_download(series_uid: str, destination: Path) -> None:
+    from idc_index import IDCClient
+
+    log(f"Downloading IDC series {series_uid} ...")
+    IDCClient().download_dicom_series(
+        series_uid, str(destination), quiet=False, show_progress_bar=True
+    )
+
+
+def _find_dicom_files(root: Path) -> list[Path]:
+    """Every readable DICOM file under root, regardless of extension.
+
+    idc-index does not guarantee a `.dcm` extension or a flat layout, so this mirrors
+    scripts/run_totalsegmentator_dicom_seg.py's own discover_ct_series: try to read
+    every file's header and keep what parses, rather than filtering by name first.
+    """
+    import pydicom
+
+    found = []
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        try:
+            pydicom.dcmread(str(path), stop_before_pixels=True)
+        except Exception:
+            continue
+        found.append(path)
+    return found
+
+
+def _stage_lung_nodule_case(args) -> tuple[Path, dict[str, Path]]:
+    """Download the replacement CT and its four reader SEGs into local scratch."""
+    case_dir = args.scratch_dir / "lung_nodule_case"
+    ct_dir = case_dir / "ct"
+    ct_files = _find_dicom_files(ct_dir) if ct_dir.exists() else []
+    if len(ct_files) != LUNG_NODULE_CT_INSTANCE_COUNT:
+        _idc_download(LUNG_NODULE_CT_SERIES_UID, ct_dir)
+        ct_files = _find_dicom_files(ct_dir)
+    if len(ct_files) != LUNG_NODULE_CT_INSTANCE_COUNT:
+        raise RuntimeError(
+            f"expected {LUNG_NODULE_CT_INSTANCE_COUNT} CT slices for "
+            f"{LUNG_NODULE_PATIENT_ID}, found {len(ct_files)}"
+        )
+    log(f"Verified CT: {LUNG_NODULE_PATIENT_ID}, {len(ct_files)} slices")
+
+    seg_paths: dict[str, Path] = {}
+    for reader, seg_uid in LUNG_NODULE_READER_SEG_SERIES_UIDS.items():
+        seg_dir = case_dir / "seg" / reader
+        found = _find_dicom_files(seg_dir) if seg_dir.exists() else []
+        if len(found) != 1:
+            _idc_download(seg_uid, seg_dir)
+            found = _find_dicom_files(seg_dir)
+        if len(found) != 1:
+            raise RuntimeError(f"expected exactly one SEG file for {reader}, found {len(found)}")
+        seg_paths[reader] = found[0]
+    log(f"Verified {len(seg_paths)} reader SEG files.")
+    return ct_dir, seg_paths
+
+
+def _ct_dicom_to_nifti(ct_dir: Path, series_uid: str, out_path: Path) -> tuple[Path, float]:
+    """Assemble the DICOM series into one NIfTI volume; return its path and z-spacing."""
+    import SimpleITK as sitk
+
+    reader = sitk.ImageSeriesReader()
+    # recursive=True: idc-index's on-disk layout for a downloaded series is not
+    # guaranteed to be flat (it may nest by study/series subdirectories), and
+    # GetGDCMSeriesFileNames does not recurse by default.
+    files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_uid, False, True)
+    if not files:
+        raise RuntimeError(f"GDCM found no files for series {series_uid} under {ct_dir}")
+    reader.SetFileNames(files)
+    image = reader.Execute()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    sitk.WriteImage(image, str(out_path))
+    slice_spacing_mm = image.GetSpacing()[2]
+    return out_path, slice_spacing_mm
+
+
+def _load_lung_nodule_detector(bundle_dir: Path, device):
+    """Instantiate the RetinaNet detector from the bundle's own inference.json values.
+
+    Hand-declared rather than run through ConfigParser end-to-end: the bundle's config
+    wires a full Ignite evaluator/handler pipeline through its own scripts/ package
+    (scripts.detection_inferer, scripts.evaluator, scripts.detection_saver), which is
+    unnecessary machinery for running the detector directly. The network architecture,
+    anchor generator, and detector parameters below are transcribed verbatim from
+    configs/inference.json so the object graph matches exactly; if the bundle's config
+    ever changes these values, this needs to change with it.
+    """
+    import torch
+    from monai.apps.detection.networks.retinanet_detector import RetinaNetDetector
+    from monai.apps.detection.networks.retinanet_network import resnet_fpn_feature_extractor
+    from monai.apps.detection.utils.anchor_utils import AnchorGeneratorWithAnchorShape
+    from monai.networks.nets import RetinaNet
+    from monai.networks.nets.resnet import resnet50
+
+    anchor_generator = AnchorGeneratorWithAnchorShape(
+        feature_map_scales=(1, 2, 4),
+        base_anchor_shapes=((6, 8, 4), (8, 6, 5), (10, 10, 6)),
+    )
+    backbone = resnet50(spatial_dims=3, n_input_channels=1, conv1_t_stride=(2, 2, 1), conv1_t_size=(7, 7, 7))
+    feature_extractor = resnet_fpn_feature_extractor(backbone, 3, False, [1, 2], None)
+    network = RetinaNet(
+        spatial_dims=3,
+        num_classes=1,
+        num_anchors=3,
+        feature_extractor=feature_extractor,
+        size_divisible=(16, 16, 8),
+        use_list_output=False,
+    ).to(device)
+
+    checkpoint = torch.load(bundle_dir / "models" / "model.pt", map_location="cpu", weights_only=False)
+    state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+    network.load_state_dict(state)
+    network.eval()
+
+    detector = RetinaNetDetector(
+        network=network,
+        anchor_generator=anchor_generator,
+        debug=False,
+        spatial_dims=3,
+        num_classes=1,
+        size_divisible=(16, 16, 8),
+    )
+    detector.set_target_keys(box_key="box", label_key="label")
+    detector.set_box_selector_parameters(
+        score_thresh=0.02, topk_candidates_per_level=1000, nms_thresh=0.22, detections_per_img=300
+    )
+    detector.set_sliding_window_inferer(
+        roi_size=(512, 512, 192), overlap=0.25, sw_batch_size=1, mode="constant", device="cpu"
+    )
+    return detector.to(device)
+
+
+def _run_lung_nodule_detector(nifti_path: Path, detector, device) -> list[dict]:
+    """Preprocess the CT exactly as the bundle's inference.json does for raw DICOM input,
+    run the detector, and convert predicted boxes to world (LPS) millimetre coordinates.
+
+    Reuses MONAI's own transform classes for both steps rather than hand-rolling the
+    coordinate math, deliberately: getting the LPS/RAS handling subtly wrong here would
+    silently misplace every predicted box, and there is no local way to catch that.
+    """
+    import torch
+    from monai.apps.detection.transforms.dictionary import (
+        AffineBoxToWorldCoordinated,
+        ClipBoxToImaged,
+        ConvertBoxModed,
+    )
+    from monai.transforms import (
+        Compose,
+        EnsureChannelFirstd,
+        EnsureTyped,
+        LoadImaged,
+        Orientationd,
+        ScaleIntensityRanged,
+        Spacingd,
+    )
+
+    preprocessing = Compose(
+        [
+            LoadImaged(keys="image", reader="itkreader", affine_lps_to_ras=True),
+            EnsureChannelFirstd(keys="image"),
+            Orientationd(keys="image", axcodes="RAS"),
+            Spacingd(keys="image", pixdim=(0.703125, 0.703125, 1.25)),
+            ScaleIntensityRanged(keys="image", a_min=-1024.0, a_max=300.0, b_min=0.0, b_max=1.0, clip=True),
+            EnsureTyped(keys="image"),
+        ]
+    )
+    data = preprocessing({"image": str(nifti_path)})
+    image = data["image"].to(device)
+
+    with torch.no_grad():
+        outputs = detector(input_images=[image], use_inferer=True)
+    prediction = outputs[0]
+
+    postprocessing = Compose(
+        [
+            ClipBoxToImaged(box_keys="box", label_keys="label", box_ref_image_keys="image", remove_empty=True),
+            AffineBoxToWorldCoordinated(box_keys="box", box_ref_image_keys="image", affine_lps_to_ras=True),
+            ConvertBoxModed(box_keys="box", src_mode="xyzxyz", dst_mode="cccwhd"),
+        ]
+    )
+    merged = {**prediction, "image": data["image"]}
+    world = postprocessing(merged)
+
+    boxes = world["box"].detach().cpu().numpy()
+    scores = world["label_scores"].detach().cpu().numpy()
+    detections = []
+    for box, score in zip(boxes, scores):
+        cx, cy, cz, w, h, d = (float(v) for v in box)
+        detections.append(
+            {
+                "center_lps_mm": (cx, cy, cz),
+                "size_whd_mm": (w, h, d),
+                "score": float(score),
+            }
+        )
+    detections.sort(key=lambda det: -det["score"])
+    return detections
+
+
+def _match_detections(detections: list[dict], ground_truth: list[dict], score_threshold: float) -> dict:
+    """LUNA16's own hit rule: a detection is a true positive if it falls within the
+    ground-truth nodule's radius of that nodule's center. Each ground-truth nodule can be
+    matched at most once (first, i.e. highest-score, detection wins it).
+    """
+    import numpy as np
+
+    kept = [d for d in detections if d["score"] >= score_threshold]
+    matched_gt: set[int] = set()
+    true_positives = []
+    false_positives = []
+    for det in kept:
+        center = np.array(det["center_lps_mm"])
+        hit_index = None
+        for gt_index, gt in enumerate(ground_truth):
+            if gt_index in matched_gt:
+                continue
+            distance = float(np.linalg.norm(center - np.array(gt["center_lps_mm"])))
+            if distance <= gt["diameter_mm"] / 2.0:
+                hit_index = gt_index
+                break
+        if hit_index is None:
+            false_positives.append(det)
+        else:
+            matched_gt.add(hit_index)
+            true_positives.append(det)
+    false_negatives = [gt for i, gt in enumerate(ground_truth) if i not in matched_gt]
+    return {
+        "score_threshold": score_threshold,
+        "true_positives": len(true_positives),
+        "false_positives": len(false_positives),
+        "false_negatives": len(false_negatives),
+        "ground_truth_count": len(ground_truth),
+        "sensitivity": (
+            len(true_positives) / len(ground_truth) if ground_truth else None
+        ),
+    }
 
 
 def run_lung_nodule(args) -> dict:
-    """Download and stage the LUNA16-trained nodule detector.
+    """Score the LUNA16-trained detector against a case confirmed absent from LUNA16.
 
-    Deliberately stops before claiming a detection metric: the pretrained checkpoint was
-    trained *and* validated on LUNA16 fold 0, and the LIDC case this project has been
-    using (LIDC-IDRI-0686, LUNG_NODULE_TEST_SERIES_UID above) is confirmed -- not
-    suspected -- to be inside fold 0's training split. Running it and reporting a hit
-    rate would be exactly the contamination mistake that disqualified TorchXRayVision as
-    an NIH comparator, except worse: here it is proven, not merely unverifiable.
+    LIDC-IDRI-0686 (the project's original test case) is permanently disqualified --
+    see CONTAMINATED_LIDC_0686_SERIES_UID above. This runs the replacement case instead:
+    LIDC-IDRI-0672, verified against LUNA16's full 888-scan corpus (not just its
+    annotated subset) to have zero overlap. Ground truth comes from the four LIDC
+    radiologists' own DICOM SEG files via scripts/lidc_seg_ground_truth.py, using a
+    >=3-of-4-reader consensus rule, since LUNA16 itself has no entry for this case to
+    read a reference standard from.
     """
-    bundle_dir = download_bundle(LUNG_NODULE_BUNDLE, args.data_dir / "bundles")
+    import torch
 
-    split_files = sorted((bundle_dir).rglob("*fold*.json")) + sorted(
-        (bundle_dir).rglob("*split*.json")
-    )
+    try:
+        from scripts.lidc_seg_ground_truth import consensus_nodules, extract_reader_nodules
+    except ModuleNotFoundError:  # Direct execution from scripts/
+        from lidc_seg_ground_truth import consensus_nodules, extract_reader_nodules  # type: ignore[no-redef]
+
+    bundle_dir = download_bundle(LUNG_NODULE_BUNDLE, args.data_dir / "bundles")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     log("")
-    log("=== LUNG NODULE DETECTOR: STAGED, NOT SCORED ===")
-    log(f"bundle    : {bundle_dir}")
-    log(f"split files shipped with bundle: {[p.name for p in split_files] or 'none found'}")
+    log("=== LUNG NODULE DETECTOR ===")
+    log(f"Replacement case: {LUNG_NODULE_PATIENT_ID} (verified absent from all of LUNA16)")
+    ct_dir, seg_paths = _stage_lung_nodule_case(args)
+
+    nifti_path = args.scratch_dir / "lung_nodule_case" / "ct.nii.gz"
+    nifti_path, slice_spacing_mm = _ct_dicom_to_nifti(ct_dir, LUNG_NODULE_CT_SERIES_UID, nifti_path)
+    log(f"CT assembled to NIfTI, slice spacing {slice_spacing_mm:.3f} mm")
+
+    nodules_by_reader = {
+        reader: extract_reader_nodules(seg_path, slice_spacing_mm)
+        for reader, seg_path in seg_paths.items()
+    }
+    for reader, nodules in nodules_by_reader.items():
+        log(f"  {reader}: {len(nodules)} marked nodule(s)")
+    ground_truth = consensus_nodules(nodules_by_reader, min_readers=LUNG_NODULE_MIN_READER_CONSENSUS)
+    log(f"Consensus ground truth (>= {LUNG_NODULE_MIN_READER_CONSENSUS}/4 readers): {len(ground_truth)} nodule(s)")
+    for gt in ground_truth:
+        log(f"  {gt['diameter_mm']:.1f} mm at {gt['center_lps_mm']}, {gt['reader_count']}/4 readers")
+
+    log("Loading detector and running inference ...")
+    detector = _load_lung_nodule_detector(bundle_dir, device)
+    detections = _run_lung_nodule_detector(nifti_path, detector, device)
+    log(f"{len(detections)} raw detections above the bundle's own score_thresh=0.02")
+
+    match = _match_detections(detections, ground_truth, LUNG_NODULE_SCORE_THRESHOLD)
     log(
-        "CONFIRMED CONTAMINATED: LIDC-IDRI-0686's series UID is in dataset_fold0.json's "
-        "training list (verified against MONAI's own published LUNA16 fold split, exact "
-        "nodule-coordinate match against LUNA16 annotations.csv). This case can never be "
-        "scored against this checkpoint. A different, fold-disjoint LIDC case is required."
+        f"At score >= {LUNG_NODULE_SCORE_THRESHOLD}: "
+        f"TP={match['true_positives']} FP={match['false_positives']} FN={match['false_negatives']} "
+        f"sensitivity={match['sensitivity']}"
     )
 
     return {
         "expert": "lung_nodule",
         "bundle": LUNG_NODULE_BUNDLE,
         "licence": "Apache-2.0",
-        "status": "staged_pending_contamination_check",
-        "bundle_dir": str(bundle_dir),
-        "split_files_found": [p.name for p in split_files],
-        "contamination_status": "CONTAMINATED",
+        "case": LUNG_NODULE_PATIENT_ID,
+        "ground_truth": ground_truth,
+        "ground_truth_source": (
+            f">= {LUNG_NODULE_MIN_READER_CONSENSUS}/4 LIDC radiologist DICOM SEGs, consensus "
+            "clustered independently for this run -- not LUNA16's own reference standard "
+            "(this case has no LUNA16 entry to read one from)."
+        ),
+        "detections": detections,
+        "match_at_threshold": match,
+        "cases_evaluated": 1,
+        "contamination_status": "CLEAN",
         "contamination_note": (
-            "Confirmed, not suspected: LIDC-IDRI-0686's SeriesInstanceUID "
-            f"({LUNG_NODULE_TEST_SERIES_UID}) appears in the 'training' list of the "
-            "MONAI-published dataset_fold0.json -- the exact split this checkpoint's "
-            "model card reports training and validating on -- with its 9 nodule boxes "
-            "matching LUNA16 annotations.csv coordinates exactly. This case's metrics "
-            "would be meaningless. A fold-disjoint LIDC case must replace it before this "
-            "detector can be scored at all."
+            f"{LUNG_NODULE_PATIENT_ID}'s CT SeriesInstanceUID was checked against every row "
+            "of LUNA16's public annotations.csv and candidates.csv (888 scans, the complete "
+            "corpus) with zero matches. LUNA16 excludes it for a documented data-quality "
+            "reason (slice thickness/spacing), not a case-quality one. n=1: this establishes "
+            "the pipeline is real, not a benchmark result -- one scan cannot produce a "
+            "false-positive-per-scan curve, only single-scan TP/FP/FN counts."
         ),
     }
 
@@ -583,7 +883,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--cases",
         type=int,
         default=3,
-        help="how many validation studies to evaluate (brain_tumor only)",
+        help="how many validation studies to evaluate (brain_tumor only); pass a number "
+        ">= the validation section size (e.g. 9999) to run all of it",
     )
     parser.add_argument("--save-masks", action="store_true")
     return parser
