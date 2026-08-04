@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -204,6 +205,118 @@ def _cache_archive_to_drive(args, dataset_root: Path) -> None:
         log(f"Could not cache archive to Drive ({exc}); continuing without it.")
 
 
+# --------------------------------------------------------------------------------------
+# MSD Task01 <-> BraTS-2018 reconciliation.
+#
+# The bundle was trained on BraTS 2018. MSD Task01_BrainTumour is BraTS-derived but is
+# NOT stored in the BraTS convention: it reorders the MRI sequences and renumbers the
+# label values. Feeding MSD straight into the bundle silently produces garbage rather
+# than an error, which is exactly what the first run did (ET Dice 0.0000 on every case).
+# Both mappings below are DERIVED AT RUNTIME from the dataset's own dataset.json rather
+# than hardcoded, so a future dataset revision surfaces as a loud failure, not as a
+# quietly wrong number.
+# --------------------------------------------------------------------------------------
+
+# From the bundle's configs/metadata.json: channel_def {0: T1c, 1: T1, 2: T2, 3: FLAIR}.
+BUNDLE_MODALITY_ORDER = ("t1c", "t1", "t2", "flair")
+
+_MODALITY_ALIASES = {
+    "flair": "flair",
+    "t2flair": "flair",
+    "t1": "t1",
+    "t1w": "t1",
+    "t1n": "t1",
+    "t1c": "t1c",
+    "t1ce": "t1c",
+    "t1gd": "t1c",
+    "t2": "t2",
+    "t2w": "t2",
+}
+
+
+def _canonical_modality(name: str) -> str:
+    """Map a dataset's sequence name onto the bundle's vocabulary, or fail loudly.
+
+    Exact lookup on a cleaned key, deliberately not prefix matching: 't1gd' starts with
+    't1' but is the contrast-enhanced sequence, and confusing the two is precisely the
+    error that destroys the enhancing-tumour channel.
+    """
+    key = re.sub(r"[\s_\-]", "", name.strip().lower())
+    if key not in _MODALITY_ALIASES:
+        raise RuntimeError(
+            f"unrecognised MRI sequence name {name!r} (normalised {key!r}); refusing to "
+            "guess which bundle input channel it belongs to"
+        )
+    return _MODALITY_ALIASES[key]
+
+
+def _brats18_label_value(name: str) -> int:
+    """Renumber a dataset's label name to the BraTS-2018 value the bundle expects.
+
+    BraTS 2018: 1 = necrotic/non-enhancing core, 2 = peritumoral edema, 4 = enhancing.
+    Order of the checks matters -- 'non-enhancing tumor' also contains 'enhancing'.
+    """
+    text = name.strip().lower()
+    if "background" in text:
+        return 0
+    if "edema" in text or "oedema" in text:
+        return 2
+    if "non-enhancing" in text or "nonenhancing" in text or "necrotic" in text:
+        return 1
+    if "enhancing" in text:
+        return 4
+    raise RuntimeError(f"unrecognised BraTS label name {name!r}; refusing to guess")
+
+
+def _read_msd_descriptor(dataset_root: Path) -> dict:
+    path = dataset_root / "Task01_BrainTumour" / "dataset.json"
+    if not path.is_file():
+        raise RuntimeError(f"MSD descriptor not found at {path}")
+    return json.loads(path.read_text())
+
+
+def _derive_msd_mapping(descriptor: dict) -> dict:
+    """Return the channel permutation and label renumbering, both fully explicit."""
+    modality = descriptor.get("modality") or {}
+    if len(modality) != 4:
+        raise RuntimeError(
+            f"expected 4 MRI sequences, dataset.json declares {len(modality)}: {modality}"
+        )
+    by_canonical: dict[str, int] = {}
+    for index, name in modality.items():
+        by_canonical[_canonical_modality(str(name))] = int(index)
+    missing = [m for m in BUNDLE_MODALITY_ORDER if m not in by_canonical]
+    if missing:
+        raise RuntimeError(
+            f"dataset is missing sequences {missing}; the bundle needs all of "
+            f"{list(BUNDLE_MODALITY_ORDER)}"
+        )
+    permutation = [by_canonical[m] for m in BUNDLE_MODALITY_ORDER]
+
+    labels = descriptor.get("labels") or {}
+    if not labels:
+        raise RuntimeError("dataset.json declares no labels; cannot score anything")
+    orig_labels = [int(v) for v in labels]
+    target_labels = [_brats18_label_value(str(labels[str(v)])) for v in orig_labels]
+    if 4 not in target_labels:
+        raise RuntimeError(
+            "no label maps to BraTS enhancing-tumour (4); the ET channel would be empty "
+            "and its Dice meaninglessly 0"
+        )
+    return {
+        "channel_permutation": permutation,
+        "channel_permutation_explained": {
+            bundle_slot: f"dataset channel {src} ({modality[str(src)]})"
+            for bundle_slot, src in zip(BUNDLE_MODALITY_ORDER, permutation)
+        },
+        "label_orig": orig_labels,
+        "label_target_brats18": target_labels,
+        "label_explained": {
+            str(labels[str(o)]): f"{o} -> {t}" for o, t in zip(orig_labels, target_labels)
+        },
+    }
+
+
 def run_brain_tumor(args) -> dict:
     """Brain-tumour segmentation on public MSD Task01 (BraTS-derived) MRI."""
     import numpy as np
@@ -216,10 +329,10 @@ def run_brain_tumor(args) -> dict:
         Compose,
         ConvertToMultiChannelBasedOnBratsClassesd,
         EnsureChannelFirstd,
+        Lambdad,
         LoadImaged,
+        MapLabelValued,
         NormalizeIntensityd,
-        Orientationd,
-        Spacingd,
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -232,27 +345,16 @@ def run_brain_tumor(args) -> dict:
     # MSD Task01_BrainTumour is the public, registration-free BraTS-derived release
     # (MONAI downloads it from its own S3 mirror). Labels ship with it, which is what
     # makes a real Dice measurement possible at all.
-    transform = Compose(
-        [
-            LoadImaged(keys=["image", "label"]),
-            EnsureChannelFirstd(keys="image"),
-            ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
-            Orientationd(keys=["image", "label"], axcodes="RAS"),
-            Spacingd(
-                keys=["image", "label"],
-                pixdim=(1.0, 1.0, 1.0),
-                mode=("bilinear", "nearest"),
-            ),
-            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
-        ]
-    )
-
+    #
+    # The dataset must be extracted before its dataset.json can be read, and the
+    # transform depends on what that file says, so the dataset is built untransformed
+    # first and the pipeline is attached afterwards.
     dataset_root = _stage_decathlon_archive(args)
     log("Preparing MSD Task01_BrainTumour ...")
     dataset = DecathlonDataset(
         root_dir=str(dataset_root),
         task="Task01_BrainTumour",
-        transform=transform,
+        transform=None,
         section="validation",
         download=True,
         cache_rate=0.0,
@@ -260,6 +362,37 @@ def run_brain_tumor(args) -> dict:
     )
     log(f"Validation section ready: {len(dataset)} studies available.")
     _cache_archive_to_drive(args, dataset_root)
+
+    mapping = _derive_msd_mapping(_read_msd_descriptor(dataset_root))
+    log("Reconciling MSD Task01 with the bundle's BraTS-2018 expectations:")
+    for slot, source in mapping["channel_permutation_explained"].items():
+        log(f"  input {slot:>5}  <- {source}")
+    for label_name, move in mapping["label_explained"].items():
+        log(f"  label {label_name!r}: {move}")
+
+    # Preprocessing is deliberately identical to the bundle's own configs (LoadImaged +
+    # NormalizeIntensityd, nothing else). The earlier Orientationd/Spacingd pair was
+    # added by me, is absent from both train.json and inference.json, and only
+    # introduced resampling error -- MSD is already 1 mm isotropic.
+    transform = Compose(
+        [
+            LoadImaged(keys=["image", "label"]),
+            EnsureChannelFirstd(keys="image"),
+            Lambdad(
+                keys="image",
+                func=lambda x, perm=tuple(mapping["channel_permutation"]): x[list(perm)],
+            ),
+            MapLabelValued(
+                keys="label",
+                orig_labels=mapping["label_orig"],
+                target_labels=mapping["label_target_brats18"],
+                dtype=np.uint8,
+            ),
+            ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
+            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+        ]
+    )
+    dataset.transform = transform
 
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
     dice_metric = DiceMetric(include_background=True, reduction="mean_batch")
@@ -277,7 +410,9 @@ def run_brain_tumor(args) -> dict:
         with torch.no_grad():
             logits = sliding_window_inference(
                 inputs=image,
-                roi_size=(224, 224, 144),
+                # The bundle's inference.json roi_size. (224, 224, 144) is its *training*
+                # random-crop size, not its inference window -- not interchangeable.
+                roi_size=(240, 240, 160),
                 sw_batch_size=1,
                 predictor=network,
                 overlap=0.5,
@@ -292,10 +427,19 @@ def run_brain_tumor(args) -> dict:
             name: int(prediction[0, c].sum().item())
             for c, name in enumerate(BRATS_CHANNELS)
         }
+        # Ground-truth counts are recorded alongside predictions specifically so an
+        # empty GT channel is visible. An all-zero GT channel scores Dice 0.0000 and
+        # looks like a model failure while actually being a label-mapping failure --
+        # the exact confusion this run already produced once.
+        truth_voxels = {
+            name: int(label[0, c].sum().item())
+            for c, name in enumerate(BRATS_CHANNELS)
+        }
         case = {
             "index": index,
             "dice": {n: round(float(s), 4) for n, s in zip(("TC", "WT", "ET"), scores)},
             "predicted_voxels": voxels,
+            "ground_truth_voxels": truth_voxels,
             "seconds": round(time.time() - case_started, 2),
         }
         per_case.append(case)
@@ -338,6 +482,7 @@ def run_brain_tumor(args) -> dict:
         "cases_evaluated": len(per_case),
         "mean_dice": mean,
         "bundle_reported_dice": BRATS_REFERENCE_DICE,
+        "msd_to_brats18_mapping": mapping,
         "per_case": per_case,
         "total_seconds": round(time.time() - started, 2),
         # The bundle was trained on BraTS 2018 with "the authors' own division scheme",
