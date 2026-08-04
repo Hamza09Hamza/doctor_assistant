@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 import httpx
 import pydicom
@@ -17,11 +18,15 @@ from scripts.publish_dicom_seg_to_orthanc import (
 )
 from scripts.run_totalsegmentator_dicom_seg import (
     _safe_extract_zip,
+    _run_totalsegmentator,
     _write_bundle,
+    build_parser,
     discover_ct_series,
     select_ct_series,
     validate_dicom_seg,
 )
+from scripts import run_local_totalsegmentator_ohif_demo as local_demo
+from scripts import run_lidc_lung_nodule_colab as lidc_demo
 
 
 def _file_dataset(path: Path, sop_class_uid: str, sop_instance_uid: str) -> FileDataset:
@@ -60,7 +65,14 @@ def _write_ct_series(root: Path, *, count: int, study_uid: str, series_uid: str)
     return files
 
 
-def _write_seg(path: Path, *, study_uid: str, referenced_series_uid: str) -> None:
+def _write_seg(
+    path: Path,
+    *,
+    study_uid: str,
+    referenced_series_uid: str,
+    segment_label: str = "liver",
+    include_frame_identification: bool = False,
+) -> None:
     dataset = _file_dataset(path, SegmentationStorage, generate_uid())
     dataset.SOPClassUID = SegmentationStorage
     dataset.SOPInstanceUID = dataset.file_meta.MediaStorageSOPInstanceUID
@@ -78,16 +90,143 @@ def _write_seg(path: Path, *, study_uid: str, referenced_series_uid: str) -> Non
     dataset.PixelRepresentation = 0
     segment = Dataset()
     segment.SegmentNumber = 1
-    segment.SegmentLabel = "liver"
+    segment.SegmentLabel = segment_label
     dataset.SegmentSequence = [segment]
     referenced = Dataset()
     referenced.SeriesInstanceUID = referenced_series_uid
     dataset.ReferencedSeriesSequence = [referenced]
+    if include_frame_identification:
+        frame_group = Dataset()
+        identification = Dataset()
+        identification.ReferencedSegmentNumber = 1
+        frame_group.SegmentIdentificationSequence = [identification]
+        dataset.PerFrameFunctionalGroupsSequence = [frame_group]
     dataset.PixelData = b"\1\0\0\0"
     dataset.save_as(path, enforce_file_format=True)
 
 
 class DicomSegWorkflowTests(unittest.TestCase):
+    def test_lidc_demo_runs_nodule_task_and_builds_comparison_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            output = root / "output"
+            work = root / "work"
+            ct_dir = cache / "ct"
+            expert_seg = root / "expert.dcm"
+            expert_seg.write_bytes(b"expert")
+            prediction_bundle = root / "prediction.zip"
+            with zipfile.ZipFile(prediction_bundle, "w") as archive:
+                archive.writestr("prediction.dcm", b"prediction")
+
+            def fake_inference(command: list[str]) -> int:
+                output.mkdir(parents=True, exist_ok=True)
+                (output / "latest_dicom_seg_run.json").write_text(
+                    '{"viewer_bundle": "' + str(prediction_bundle) + '"}\n'
+                )
+                return 0
+
+            with (
+                mock.patch.object(lidc_demo, "_require_gpu"),
+                mock.patch.object(lidc_demo, "ensure_ct", return_value=ct_dir),
+                mock.patch.object(lidc_demo, "ensure_expert_seg", return_value=expert_seg),
+                mock.patch.object(lidc_demo, "dicom_seg_main", side_effect=fake_inference) as run_seg,
+            ):
+                result = lidc_demo.main(
+                    [
+                        "--cache-dir", str(cache),
+                        "--output-dir", str(output),
+                        "--work-dir", str(work),
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            command = run_seg.call_args.args[0]
+            self.assertIn("lung_nodules", command)
+            self.assertIn("--require-segment-label", command)
+            latest = (output / "latest_dicom_seg_run.json").read_text()
+            self.assertIn("ohif_ai_vs_expert_bundle.zip", latest)
+
+    def test_inference_passes_the_requested_pathology_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("totalsegmentator.python_api.totalsegmentator") as inference:
+                _run_totalsegmentator(
+                    dicom_dir=root / "dicom",
+                    seg_path=root / "seg.dcm",
+                    statistics_path=root / "statistics.json",
+                    report_path=root / "report.json",
+                    task="lung_nodules",
+                    fast=False,
+                    force_split=False,
+                )
+            self.assertEqual(inference.call_args.kwargs["task"], "lung_nodules")
+
+    def test_parser_accepts_pathology_task_and_required_label(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--dicom-input", "input",
+                "--output-dir", "output",
+                "--work-dir", "work",
+                "--task", "lung_nodules",
+                "--require-segment-label", "lung_nodules",
+            ]
+        )
+        self.assertEqual(args.task, "lung_nodules")
+        self.assertEqual(args.require_segment_label, ["lung_nodules"])
+
+    def test_local_demo_uses_pinned_public_ct_and_split_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            output = root / "output"
+            work = root / "work"
+            weights = root / "weights"
+            public_files = [cache / "ct-1-001.dcm"]
+            with (
+                mock.patch.object(
+                    local_demo,
+                    "_require_local_gpu",
+                    return_value=("RTX 3050", 6.0),
+                ),
+                mock.patch.object(local_demo, "download_public_ct", return_value=public_files),
+                mock.patch.object(local_demo, "validate_public_ct", return_value="signature"),
+                mock.patch.object(local_demo, "dicom_seg_main", return_value=0) as run_seg,
+                mock.patch.dict("os.environ", {}, clear=True),
+            ):
+                result = local_demo.main(
+                    [
+                        "--cache-dir",
+                        str(cache),
+                        "--output-dir",
+                        str(output),
+                        "--work-dir",
+                        str(work),
+                        "--weights-dir",
+                        str(weights),
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            command = run_seg.call_args.args[0]
+            self.assertIn("--confirm-deidentified", command)
+            self.assertIn("--force-split", command)
+            self.assertIn(local_demo.EXPECTED_SERIES_UID, command)
+            self.assertNotIn("--fast", command)
+
+    def test_local_demo_rejects_insufficient_vram_before_download(self) -> None:
+        with (
+            mock.patch.object(
+                local_demo,
+                "_require_local_gpu",
+                return_value=("small GPU", 4.0),
+            ),
+            mock.patch.object(local_demo, "download_public_ct") as download,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "less than 5.5 GiB"):
+                local_demo.main([])
+        download.assert_not_called()
+
     def test_discovers_and_selects_requested_ct_series(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -157,6 +296,32 @@ class DicomSegWorkflowTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(RuntimeError, "StudyInstanceUID"):
                 validate_dicom_seg(seg_path, source)
+
+    def test_pathology_validation_requires_an_encoded_nodule_segment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_dir = root / "source"
+            source_dir.mkdir()
+            study_uid = generate_uid()
+            series_uid = generate_uid()
+            _write_ct_series(source_dir, count=2, study_uid=study_uid, series_uid=series_uid)
+            source = select_ct_series(discover_ct_series(source_dir), None)
+
+            nodule_seg = root / "nodule_seg.dcm"
+            _write_seg(
+                nodule_seg,
+                study_uid=study_uid,
+                referenced_series_uid=series_uid,
+                segment_label="lung_nodules",
+                include_frame_identification=True,
+            )
+            validation = validate_dicom_seg(nodule_seg, source, ("lung_nodules",))
+            self.assertEqual(validation.segment_labels, ("lung_nodules",))
+
+            anatomy_seg = root / "anatomy_seg.dcm"
+            _write_seg(anatomy_seg, study_uid=study_uid, referenced_series_uid=series_uid)
+            with self.assertRaisesRegex(RuntimeError, "missing required segment"):
+                validate_dicom_seg(anatomy_seg, source, ("lung_nodules",))
 
     def test_zip_extraction_rejects_path_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

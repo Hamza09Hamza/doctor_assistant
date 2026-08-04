@@ -119,6 +119,13 @@ that revision when comparing runs.
 
 ## CT and TotalSegmentator
 
+For the current pathology proof, use
+`notebooks/lung_nodule_segmentation_colab.ipynb` on an L4. It needs no user-provided
+DICOM: it downloads pinned public LIDC series `LIDC-IDRI-0686`, runs the
+TotalSegmentator `lung_nodules` task, requires a non-empty nodule segment, and creates
+an OHIF bundle with both the prediction and a radiologist DICOM SEG. This is a narrow
+lung-nodule benchmark, not a universal abnormality detector.
+
 Use a separate environment for TotalSegmentator. Its nnU-Net stack can replace NumPy,
 SciPy, and Torch versions required by the chest-data and reporting environment.
 
@@ -126,17 +133,21 @@ SciPy, and Torch versions required by the chest-data and reporting environment.
 python3 -m venv .venv-ct
 source .venv-ct/bin/activate
 python -m pip install --upgrade pip
-python -m pip install torch monai nibabel pydicom SimpleITK TotalSegmentator
+python -m pip install torch monai nibabel pydicom SimpleITK TotalSegmentator highdicom==0.27.0
 ```
 
-For the first visual proof, use `notebooks/totalsegmentator_demo_colab.ipynb`. It pins
-the model runtime inside a single-purpose Colab session, keeps weights/results on Drive,
-does inference I/O under `/content`, and fails unless the saved mask is non-empty and its
-shape/affine match the source CT. The resulting overlay is visual QC, not validation.
+For the first visual proof, run
+`python -u scripts/run_local_totalsegmentator_ohif_demo.py`. It automatically uses a
+pinned public de-identified OHIF test CT and the full 1.5 mm model with split inference.
+This path completed on the RTX 3050 6 GB laptop GPU on 2026-08-04 and created a valid
+DICOM SEG with 91 non-empty segments and 3,287 frames. Colab is now an optional fallback
+for computers without a suitable local NVIDIA GPU.
 
-The viewer bridge is implemented in `notebooks/totalsegmentator_dicom_seg_colab.ipynb`
-and `scripts/publish_dicom_seg_to_orthanc.py`. It uses a real de-identified DICOM CT,
-asks TotalSegmentator 2.17 for direct `output_type="dicom_seg"` output, validates the
+The viewer bridge is implemented in `scripts/run_totalsegmentator_dicom_seg.py` and
+`scripts/publish_dicom_seg_to_orthanc.py`, with an optional Colab notebook. It uses a
+real de-identified DICOM CT,
+asks TotalSegmentator 2.17 for direct `output_type="dicom_seg"` output, supports both
+anatomy and named specialist tasks, validates the
 source references and pixel data, uploads the CT and SEG to Orthanc, and prints the
 exact Clinique Amina URL. See `docs/TOTALSEGMENTATOR_OHIF.md` for the short runbook.
 The NIfTI-only Zenodo demo has no source DICOM instances to reference and therefore

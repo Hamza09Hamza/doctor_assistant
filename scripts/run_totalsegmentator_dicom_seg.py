@@ -51,6 +51,7 @@ class SegValidation:
     referenced_series_instance_uid: str
     segment_count: int
     frame_count: int
+    segment_labels: tuple[str, ...]
 
 
 def _require_pydicom():
@@ -213,7 +214,11 @@ def _referenced_series_uids(dataset) -> set[str]:
     return referenced
 
 
-def validate_dicom_seg(seg_path: Path, source: DicomSeries) -> SegValidation:
+def validate_dicom_seg(
+    seg_path: Path,
+    source: DicomSeries,
+    required_segment_labels: tuple[str, ...] = (),
+) -> SegValidation:
     pydicom = _require_pydicom()
     if not seg_path.is_file() or seg_path.stat().st_size == 0:
         raise RuntimeError(f"DICOM SEG was not created: {seg_path}")
@@ -228,16 +233,49 @@ def validate_dicom_seg(seg_path: Path, source: DicomSeries) -> SegValidation:
     referenced_uids = _referenced_series_uids(dataset)
     if source.series_instance_uid not in referenced_uids:
         raise RuntimeError("DICOM SEG does not reference the selected source CT series")
-    segment_count = len(getattr(dataset, "SegmentSequence", []) or [])
+    segment_sequence = getattr(dataset, "SegmentSequence", []) or []
+    segment_count = len(segment_sequence)
+    segment_labels = tuple(
+        str(getattr(segment, "SegmentLabel", "")).strip() for segment in segment_sequence
+    )
     frame_count = int(getattr(dataset, "NumberOfFrames", 0) or 0)
     if segment_count < 1 or frame_count < 1 or not getattr(dataset, "PixelData", b""):
         raise RuntimeError("DICOM SEG contains no usable segments, frames, or pixel data")
+    normalized_labels = {label.casefold() for label in segment_labels}
+    missing_labels = [
+        label for label in required_segment_labels if label.casefold() not in normalized_labels
+    ]
+    if missing_labels:
+        raise RuntimeError(
+            "DICOM SEG is missing required segment label(s): " + ", ".join(missing_labels)
+        )
+    if required_segment_labels:
+        number_to_label = {
+            int(segment.SegmentNumber): str(segment.SegmentLabel).strip()
+            for segment in segment_sequence
+        }
+        labels_with_frames: set[str] = set()
+        for frame_group in getattr(dataset, "PerFrameFunctionalGroupsSequence", []) or []:
+            identification = getattr(frame_group, "SegmentIdentificationSequence", []) or []
+            if identification:
+                number = int(identification[0].ReferencedSegmentNumber)
+                if number in number_to_label:
+                    labels_with_frames.add(number_to_label[number].casefold())
+        empty_labels = [
+            label for label in required_segment_labels if label.casefold() not in labels_with_frames
+        ]
+        if empty_labels:
+            raise RuntimeError(
+                "DICOM SEG has no encoded frames for required segment label(s): "
+                + ", ".join(empty_labels)
+            )
     return SegValidation(
         study_instance_uid=study_uid,
         series_instance_uid=str(getattr(dataset, "SeriesInstanceUID", "")),
         referenced_series_instance_uid=source.series_instance_uid,
         segment_count=segment_count,
         frame_count=frame_count,
+        segment_labels=segment_labels,
     )
 
 
@@ -265,7 +303,9 @@ def _run_totalsegmentator(
     seg_path: Path,
     statistics_path: Path,
     report_path: Path,
+    task: str,
     fast: bool,
+    force_split: bool,
 ) -> None:
     try:
         from totalsegmentator.python_api import totalsegmentator
@@ -282,17 +322,18 @@ def _run_totalsegmentator(
         return totalsegmentator(
             input=dicom_dir,
             output=seg_path,
-            task="total",
+            task=task,
             device="gpu",
             fast=fast,
             output_type="dicom_seg",
             statistics=statistics_path,
             report=report_path,
             nr_thr_saving=1,
+            force_split=force_split,
         )
 
     quality = "fast_3mm" if fast else "full_1p5mm"
-    print(f"Running TotalSegmentator: quality={quality}, device=gpu", flush=True)
+    print(f"Running TotalSegmentator: task={task}, quality={quality}, device=gpu", flush=True)
     _run_with_heartbeat(inference)
 
 
@@ -331,7 +372,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--series-instance-uid")
+    parser.add_argument(
+        "--task",
+        default="total",
+        help="TotalSegmentator task name (for example: total or lung_nodules)",
+    )
+    parser.add_argument(
+        "--require-segment-label",
+        action="append",
+        default=[],
+        help="Fail unless this exact label exists in the DICOM SEG (repeatable)",
+    )
     parser.add_argument("--fast", action="store_true", help="Use the lower-resolution 3 mm model")
+    parser.add_argument(
+        "--force-split",
+        action="store_true",
+        help="Split inference into three parts to reduce peak GPU memory",
+    )
     parser.add_argument("--force", action="store_true", help="Intentionally rerun inference")
     parser.add_argument(
         "--confirm-deidentified",
@@ -348,6 +405,11 @@ def main(argv: list[str] | None = None) -> int:
             "refusing to process or bundle DICOM until --confirm-deidentified is supplied; "
             "this script does not remove patient identifiers"
         )
+    if args.fast and args.task == "lung_nodules":
+        raise RuntimeError("the lung_nodules task has no supported fast model; remove --fast")
+    safe_task = "".join(character if character.isalnum() or character in "_-" else "_" for character in args.task)
+    if not safe_task:
+        raise RuntimeError("--task must contain at least one letter or number")
 
     print("=== DICOM CT -> TotalSegmentator DICOM SEG started ===", flush=True)
     print("Patient-identifying DICOM tag values will not be printed.", flush=True)
@@ -368,9 +430,9 @@ def main(argv: list[str] | None = None) -> int:
         signature = _source_signature(selected)
         quality = "fast_3mm" if args.fast else "full_1p5mm"
         run_key = hashlib.sha256(
-            f"{selected.study_instance_uid}|{selected.series_instance_uid}".encode("utf-8")
+            f"{selected.study_instance_uid}|{selected.series_instance_uid}|{args.task}".encode("utf-8")
         ).hexdigest()[:12]
-        durable_result = args.output_dir / f"study_{run_key}" / quality
+        durable_result = args.output_dir / f"study_{run_key}" / f"task_{safe_task}" / quality
         durable_seg = durable_result / "totalsegmentator_seg.dcm"
         durable_manifest = durable_result / "run_manifest.json"
 
@@ -382,8 +444,13 @@ def main(argv: list[str] | None = None) -> int:
             and not args.force
         ):
             old_manifest = json.loads(durable_manifest.read_text())
-            if old_manifest.get("source_signature") == signature:
-                validation = validate_dicom_seg(durable_seg, selected)
+            if (
+                old_manifest.get("source_signature") == signature
+                and old_manifest.get("task", "total") == args.task
+            ):
+                validation = validate_dicom_seg(
+                    durable_seg, selected, tuple(args.require_segment_label)
+                )
                 print("Reusing the verified DICOM SEG already stored in Drive.", flush=True)
                 latest = {
                     "result_dir": str(durable_result),
@@ -399,7 +466,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Viewer bundle: {latest['viewer_bundle']}", flush=True)
                 return 0
 
-        local_result = args.work_dir / f"study_{run_key}" / quality
+        local_result = args.work_dir / f"study_{run_key}" / f"task_{safe_task}" / quality
         source_dir = local_result / "source_dicom"
         if local_result.exists():
             shutil.rmtree(local_result)
@@ -415,10 +482,14 @@ def main(argv: list[str] | None = None) -> int:
             seg_path=seg_path,
             statistics_path=statistics_path,
             report_path=report_path,
+            task=args.task,
             fast=args.fast,
+            force_split=args.force_split,
         )
         runtime_seconds = round(time.monotonic() - started, 2)
-        validation = validate_dicom_seg(seg_path, selected)
+        validation = validate_dicom_seg(
+            seg_path, selected, tuple(args.require_segment_label)
+        )
 
         manifest = {
             "workflow": "totalsegmentator_dicom_seg",
@@ -427,14 +498,21 @@ def main(argv: list[str] | None = None) -> int:
             "study_instance_uid": selected.study_instance_uid,
             "source_series_instance_uid": selected.series_instance_uid,
             "source_instance_count": selected.instance_count,
+            "task": args.task,
+            "required_segment_labels": args.require_segment_label,
             "quality": quality,
+            "force_split": args.force_split,
             "runtime_seconds": runtime_seconds,
             "totalsegmentator_version": importlib.metadata.version("TotalSegmentator"),
             "pydicom_version": importlib.metadata.version("pydicom"),
             "highdicom_version": importlib.metadata.version("highdicom"),
             "validation": asdict(validation),
             "dicom_seg_sha256": _hash_file(seg_path),
-            "notice": "Anatomical segmentation for visual QC; not a diagnosis.",
+            "notice": (
+                "Experimental pathology segmentation for visual evaluation; not a diagnosis."
+                if args.task != "total"
+                else "Anatomical segmentation for visual QC; not a diagnosis."
+            ),
         }
         manifest_path = local_result / "run_manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")

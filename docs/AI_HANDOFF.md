@@ -275,8 +275,8 @@ this sandbox's GPU, 6GB VRAM, can't fit a 7B model; needs to run in Colab).
 **TotalSegmentator** (`experts/ct_totalsegmentator.py`,
 `scripts/demo_totalsegmentator.py`, `notebooks/totalsegmentator_demo_colab.ipynb`) —
 CT organ segmentation, **Apache 2.0, no gate, no restriction** — the actual "real win"
-candidate. Confirmed installed and importable in a local sandbox (though full runs
-need a real GPU/Colab). The visual-proof demo was rebuilt on 2026-08-04: it pins
+candidate. Confirmed installed and working on the local RTX 3050 6 GB GPU. The
+visual-proof demo was rebuilt on 2026-08-04: it pins
 TotalSegmentator 2.17.0, verifies Zenodo record `10047263`'s exact v2.0.1 filename and
 published MD5, extracts only the selected CT, stages inference under `/content`, and
 writes a geometry-checked `segmentation.nii.gz`, colored `preview.png`, organ-volume
@@ -286,16 +286,35 @@ and run report. The old script incorrectly passed an output *directory* with `ml
 workflow completed on an L4 for subject `s0011`, producing 108 non-empty anatomy labels
 with matching source geometry.
 
-**OHIF bridge is now implemented but still needs its first real DICOM end-to-end run.**
-`notebooks/totalsegmentator_dicom_seg_colab.ipynb` accepts a user-confirmed
-de-identified DICOM CT and emits direct `dicom_seg` plus a portable viewer bundle.
+**OHIF bridge has completed its first real CT -> DICOM SEG run locally.**
+`scripts/run_local_totalsegmentator_ohif_demo.py` downloads and validates a pinned,
+public, de-identified 135-slice ACRIN CT from `OHIF/viewer-testdata`, then invokes the
+full 1.5 mm model in split mode. On 2026-08-04 the RTX 3050 6 GB laptop GPU completed
+inference in 78.57 seconds (469.68 seconds for the first complete run including model
+downloads and DICOM packaging). The standards-valid result has 91 non-empty segments,
+3,287 frames, and verified references to the exact CT Study and Series. The portable
+bundle is under `results/totalsegmentator_ohif_local_demo/` and is gitignored.
+`notebooks/totalsegmentator_dicom_seg_colab.ipynb` remains an optional fallback for a
+machine without a suitable local GPU.
 `scripts/publish_dicom_seg_to_orthanc.py` validates the references, uploads source CT +
 SEG to Orthanc, verifies QIDO visibility, and prints the exact Clinique Amina URL. The
 doctor-assistant OHIF mode now exposes a read-only segmentation panel, defaults to the
 Orthanc data source, and `deployments/docker-compose.yml` includes the viewer with a
-same-origin DICOMweb proxy. Unit/static checks pass; Docker is unavailable in the agent
-sandbox and no de-identified source DICOM was supplied, so do not claim the live OHIF
-overlay has been observed yet. The runbook is `docs/TOTALSEGMENTATOR_OHIF.md`.
+same-origin DICOMweb proxy. Unit/static checks pass. Docker is not installed on the
+current host, so the live browser overlay has not yet been observed; do not rerun
+segmentation after Docker is installed—publish the saved bundle. The runbook is
+`docs/TOTALSEGMENTATOR_OHIF.md`.
+
+**Product direction changed from anatomy to pathology highlighting on 2026-08-04.**
+Do not present normal-organ TotalSegmentator masks as the requested result. The first
+bounded pathology proof is now `notebooks/lung_nodule_segmentation_colab.ipynb`: it
+uses an L4, downloads pinned public LIDC CT `LIDC-IDRI-0686` (238 slices), runs the
+TotalSegmentator `lung_nodules` specialist, fails if no encoded nodule segment is
+present, and bundles the CT + AI SEG + a same-series radiologist SEG for OHIF.
+`scripts/run_totalsegmentator_dicom_seg.py` now accepts `--task` and repeatable
+`--require-segment-label`; `scripts/run_lidc_lung_nodule_colab.py` owns the pinned
+benchmark orchestration. This is an honest lung-nodule experiment, not a universal
+tumor/fracture detector. Add separate validated specialists per pathology and modality.
 
 **Grad-CAM on KAD-512** — the licensing-clean alternative to MAIRA-2 for "AI
 highlights where it's looking" in the viewer. `explainability/gradcam.py` already
@@ -342,9 +361,10 @@ sandbox and `git push` fails with "Permission denied (publickey)", check
 2. Re-read `docs/CHEST_CLASSIFIER_RESET.md` in full if you're touching anything
    classifier-related — it's more authoritative and detailed than this file's
    compressed summary in §4.
-3. If the user is asking for a "quick win": TotalSegmentator (§6) is genuinely the
-   fastest legitimate path, has zero license risk, and just needs its demo notebook
-   actually executed in Colab, then the NiFTI→DICOM→DICOM-SEG→OHIF wiring built.
+3. If the user is asking for a pathology "quick win," run
+   `notebooks/lung_nodule_segmentation_colab.ipynb` on the L4; it supplies its own
+   public positive CT, so do not ask for `DICOM_INPUT`. Publish the resulting
+   AI-vs-expert bundle with `scripts/publish_dicom_seg_to_orthanc.py`.
 4. If the user is frustrated about KAD not passing: re-read §4's pattern analysis
    before agreeing to lower any target. Gate 2 adaptation is the honest fix, and it's
    unstarted, real, scoped work — that's a legitimate thing to start building.
