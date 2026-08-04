@@ -127,6 +127,83 @@ def _load_network_from_bundle(bundle_dir: Path, device):
     return network.to(device).eval()
 
 
+ARCHIVE_NAME = "Task01_BrainTumour.tar"
+# Full archive is ~7.09 GB; anything materially smaller is a truncated download.
+MIN_ARCHIVE_GB = 7.0
+
+
+def _stage_decathlon_archive(args) -> Path:
+    """Return a LOCAL directory to download/extract the dataset into.
+
+    Downloading a 7 GB tar straight into a mounted Drive, then extracting ~750 files
+    through the same FUSE mount, is pathologically slow -- observed collapsing from
+    20 MB/s to 2 MB/s partway through, with extraction still to come. This is the exact
+    failure docs/CHEST_CLASSIFIER_RESET.md's "Colab artifact layout" section warns about:
+    Drive holds durable inputs/outputs, /content does the heavy I/O.
+
+    So: extract on fast local disk, but reuse a Drive-cached copy of the tar when one
+    exists, which keeps the expensive download a once-ever cost rather than once-per-
+    session. Drive reads are far cheaper than Drive writes.
+    """
+    import shutil
+
+    scratch = args.scratch_dir
+    scratch.mkdir(parents=True, exist_ok=True)
+
+    local_archive = scratch / ARCHIVE_NAME
+    drive_archive = args.data_dir / ARCHIVE_NAME
+    extracted = scratch / "Task01_BrainTumour"
+
+    if extracted.is_dir():
+        log(f"Dataset already extracted locally at {extracted}")
+        return scratch
+    if local_archive.is_file():
+        log(f"Reusing local archive {local_archive}")
+        return scratch
+    if drive_archive.is_file():
+        size_gb = drive_archive.stat().st_size / 1024**3
+        # An interrupted earlier run can leave a truncated tar behind. Copying a partial
+        # archive would waste a multi-GB copy before MONAI's own hash check rejected it,
+        # so size-screen it here and delete it rather than trusting mere existence.
+        if size_gb < MIN_ARCHIVE_GB:
+            log(
+                f"Ignoring partial Drive archive ({size_gb:.2f} GB < {MIN_ARCHIVE_GB} GB "
+                "expected) -- almost certainly a truncated earlier download."
+            )
+            try:
+                drive_archive.unlink()
+                log(f"Removed truncated {drive_archive}")
+            except OSError as exc:
+                log(f"Could not remove truncated archive ({exc}); continuing.")
+        else:
+            log(f"Copying cached archive from Drive ({size_gb:.2f} GB) -> {scratch} ...")
+            shutil.copy2(drive_archive, local_archive)
+            log("Copy complete; skipping the 7 GB download entirely.")
+            return scratch
+
+    log(f"No cached archive; MONAI will download ~7 GB into local scratch {scratch}")
+    log("(Downloading to local disk, NOT Drive -- Drive FUSE writes throttle badly.)")
+    return scratch
+
+
+def _cache_archive_to_drive(args, dataset_root: Path) -> None:
+    """Persist the downloaded tar to Drive so later sessions skip the download."""
+    import shutil
+
+    local_archive = dataset_root / ARCHIVE_NAME
+    drive_archive = args.data_dir / ARCHIVE_NAME
+    if not local_archive.is_file() or drive_archive.is_file():
+        return
+    try:
+        size_gb = local_archive.stat().st_size / 1024**3
+        log(f"Caching archive to Drive for future sessions ({size_gb:.2f} GB) ...")
+        args.data_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(local_archive, drive_archive)
+        log(f"Cached: {drive_archive}")
+    except Exception as exc:  # noqa: BLE001 -- caching is best-effort, never fatal
+        log(f"Could not cache archive to Drive ({exc}); continuing without it.")
+
+
 def run_brain_tumor(args) -> dict:
     """Brain-tumour segmentation on public MSD Task01 (BraTS-derived) MRI."""
     import numpy as np
@@ -170,9 +247,10 @@ def run_brain_tumor(args) -> dict:
         ]
     )
 
-    log("Preparing MSD Task01_BrainTumour (~7 GB on first run; cached afterwards) ...")
+    dataset_root = _stage_decathlon_archive(args)
+    log("Preparing MSD Task01_BrainTumour ...")
     dataset = DecathlonDataset(
-        root_dir=str(args.data_dir),
+        root_dir=str(dataset_root),
         task="Task01_BrainTumour",
         transform=transform,
         section="validation",
@@ -181,6 +259,7 @@ def run_brain_tumor(args) -> dict:
         num_workers=2,
     )
     log(f"Validation section ready: {len(dataset)} studies available.")
+    _cache_archive_to_drive(args, dataset_root)
 
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
     dice_metric = DiceMetric(include_background=True, reduction="mean_batch")
@@ -323,7 +402,19 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("brain_tumor", "lung_nodule", "both"),
         default="brain_tumor",
     )
-    parser.add_argument("--data-dir", type=Path, required=True)
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        required=True,
+        help="durable storage (Drive) for the model bundle and the cached dataset tar",
+    )
+    parser.add_argument(
+        "--scratch-dir",
+        type=Path,
+        default=Path("/content/monai_scratch"),
+        help="fast LOCAL disk for downloading/extracting the dataset; never point this "
+        "at a mounted Drive -- FUSE writes throttle a 7 GB download to a crawl",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--cases",
@@ -338,6 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     args.data_dir.mkdir(parents=True, exist_ok=True)
+    args.scratch_dir.mkdir(parents=True, exist_ok=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
