@@ -5,6 +5,8 @@ import {
   modeFactory,
   modeInstance as basicModeInstance,
   basicLayout,
+  cornerstone,
+  defaultActivatePanelTriggers,
   extensionDependencies as baseExtensionDependencies,
 } from '@ohif/mode-basic';
 
@@ -13,7 +15,7 @@ import {
  * (object-spread over the real basicModeInstance), plus UI/UX simplification for
  * this product's actual audience (general/non-specialist, not radiologists — see
  * the redesign plan): a trimmed toolbar, relabeled controls, a cleaner viewport
- * overlay, and the findings panel as the sole right-side surface.
+ * overlay, plus focused findings and read-only anatomy-segmentation surfaces.
  */
 const doctorAssistantPanel = {
   findings: '@doctor-assistant/extension-doctor-assistant.panelModule.findingsPanel',
@@ -28,11 +30,12 @@ export const doctorAssistantLayout = {
   ...basicLayout,
   props: {
     ...basicLayout.props,
-    // Replaces (not appends to) basic's rightPanels: with MeasurementTools and
-    // segmentation dropped from the toolbar below, those panel tabs would be
-    // permanent dead ends — the findings panel is this mode's only right-side
-    // surface.
-    rightPanels: [doctorAssistantPanel.findings],
+    // Keep the product-specific findings surface first, then expose OHIF's
+    // read-only segmentation panel for DICOM SEG objects produced by
+    // TotalSegmentator.  Editing remains disabled by the inherited basic-mode
+    // customization: these are model results for visual QC, not user-authored
+    // clinical contours.
+    rightPanels: [doctorAssistantPanel.findings, cornerstone.segmentation],
     rightPanelClosed: false,
   },
 };
@@ -52,6 +55,10 @@ export const modeInstance = {
   isValidMode,
   routes: [doctorAssistantRoute],
   extensions: extensionDependencies,
+  // When a DICOM SEG is hydrated, take the user straight to the anatomy list
+  // where labels can be toggled.  Measurement activation remains intentionally
+  // absent because this mode does not expose the measurement panel.
+  activatePanelTriggers: [defaultActivatePanelTriggers[0]],
   // Composes a second pack on top of basic's `[{ $reference: 'cornerstone.toolbarSections' }]`
   // (packs merge by Object.assign in order, later keys win) rather than patching
   // `toolbarSections.primary` via a modeCustomizations $set — that specific path is a

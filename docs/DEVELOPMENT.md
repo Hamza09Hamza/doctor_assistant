@@ -134,9 +134,12 @@ the model runtime inside a single-purpose Colab session, keeps weights/results o
 does inference I/O under `/content`, and fails unless the saved mask is non-empty and its
 shape/affine match the source CT. The resulting overlay is visual QC, not validation.
 
-For the later viewer bridge, use a real de-identified DICOM CT as input. TotalSegmentator
-2.17 supports direct `output_type="dicom_seg"` output when `highdicom` is installed;
-the NIfTI-only Zenodo demo has no source DICOM instances to reference and therefore
+The viewer bridge is implemented in `notebooks/totalsegmentator_dicom_seg_colab.ipynb`
+and `scripts/publish_dicom_seg_to_orthanc.py`. It uses a real de-identified DICOM CT,
+asks TotalSegmentator 2.17 for direct `output_type="dicom_seg"` output, validates the
+source references and pixel data, uploads the CT and SEG to Orthanc, and prints the
+exact Clinique Amina URL. See `docs/TOTALSEGMENTATOR_OHIF.md` for the short runbook.
+The NIfTI-only Zenodo demo has no source DICOM instances to reference and therefore
 cannot itself produce a standards-valid DICOM SEG.
 
 Do not treat a successful synthetic CT wiring run as organ-segmentation validation.

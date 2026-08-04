@@ -282,18 +282,20 @@ published MD5, extracts only the selected CT, stages inference under `/content`,
 writes a geometry-checked `segmentation.nii.gz`, colored `preview.png`, organ-volume
 `measurements.json`, hashes/runtime provenance, and TotalSegmentator's own statistics
 and run report. The old script incorrectly passed an output *directory* with `ml=True`
-(the API requires a NIfTI file path), so that path could not have completed. The saved
-notebook outputs confirmed setup reached the L4 but the inference cell had never run;
-those stale partial outputs were cleared. **The rebuilt workflow still needs its first
-real Colab Run-all before claiming success.**
+(the API requires a NIfTI file path), so that path could not have completed. The rebuilt
+workflow completed on an L4 for subject `s0011`, producing 108 non-empty anatomy labels
+with matching source geometry.
 
-**Explicitly not yet built:** anything showing in the OHIF viewer. The Zenodo sample is
-NIfTI and cannot directly produce a standards-valid DICOM SEG because it has no source
-DICOM instances/UIDs to reference. Do not synthesize DICOM merely to work around that:
-TotalSegmentator 2.17 can emit `output_type="dicom_seg"` directly (with `highdicom`)
-when given a real DICOM series. After the visual proof passes, use a properly
-de-identified DICOM CT, generate the SEG directly, upload it to Orthanc, and expose a
-read-only segmentation surface in the Clinique Amina mode.
+**OHIF bridge is now implemented but still needs its first real DICOM end-to-end run.**
+`notebooks/totalsegmentator_dicom_seg_colab.ipynb` accepts a user-confirmed
+de-identified DICOM CT and emits direct `dicom_seg` plus a portable viewer bundle.
+`scripts/publish_dicom_seg_to_orthanc.py` validates the references, uploads source CT +
+SEG to Orthanc, verifies QIDO visibility, and prints the exact Clinique Amina URL. The
+doctor-assistant OHIF mode now exposes a read-only segmentation panel, defaults to the
+Orthanc data source, and `deployments/docker-compose.yml` includes the viewer with a
+same-origin DICOMweb proxy. Unit/static checks pass; Docker is unavailable in the agent
+sandbox and no de-identified source DICOM was supplied, so do not claim the live OHIF
+overlay has been observed yet. The runbook is `docs/TOTALSEGMENTATOR_OHIF.md`.
 
 **Grad-CAM on KAD-512** — the licensing-clean alternative to MAIRA-2 for "AI
 highlights where it's looking" in the viewer. `explainability/gradcam.py` already

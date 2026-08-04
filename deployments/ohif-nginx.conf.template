@@ -1,0 +1,26 @@
+server {
+  gzip_static always;
+  gzip_proxied expired no-cache no-store private auth;
+  gunzip on;
+  listen ${PORT} default_server;
+  listen [::]:${PORT} default_server;
+
+  location /pacs/dicom-web/ {
+    proxy_set_header Authorization "Basic ZG9jdG9yX2Fzc2lzdGFudDpkb2N0b3JfYXNzaXN0YW50";
+    proxy_set_header Host orthanc;
+    proxy_pass http://orthanc:8042/dicom-web/;
+  }
+
+  location /wado {
+    proxy_set_header Authorization "Basic ZG9jdG9yX2Fzc2lzdGFudDpkb2N0b3JfYXNzaXN0YW50";
+    proxy_set_header Host orthanc;
+    proxy_pass http://orthanc:8042/wado;
+  }
+
+  location / {
+    root /usr/share/nginx/html;
+    index index.html index.htm;
+    try_files $uri $uri/ ${PUBLIC_URL}index.html;
+    add_header Cross-Origin-Resource-Policy same-origin;
+  }
+}

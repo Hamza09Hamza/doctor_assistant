@@ -95,12 +95,10 @@ window.config = {
   // server's proxy covers.
   doctorAssistantApiBaseUrl: 'http://localhost:8000',
 
-  // TEMPORARY for UI/theme preview: defaults to the public demo dataset
-  // (no Orthanc/Docker required) so the viewer has real studies to show
-  // while Phase 2's Orthanc container isn't running in this environment.
-  // Switch back to 'orthancProxy' once Orthanc is up for real end-to-end
-  // testing — both sources stay configured below either way.
-  defaultDataSourceName: 'demoDataSource',
+  // The real product path is now Orthanc. The public OHIF source remains below
+  // as a manual preview fallback, but must never be confused with locally
+  // generated TotalSegmentator studies.
+  defaultDataSourceName: 'orthancProxy',
   dataSources: [
     {
       // Points at the Orthanc container from deployments/docker-compose.yml

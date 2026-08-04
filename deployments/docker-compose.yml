@@ -1,14 +1,11 @@
-# Local development services for the API (see api/, requirements-api.txt): Postgres
-# (Phase 1) and Orthanc + DICOMweb (Phase 2).
+# Local development services for the API, Orthanc/DICOMweb, and the Clinique
+# Amina OHIF viewer.
 #
 # Usage:
 #   docker compose -f deployments/docker-compose.yml up -d
 #   DATABASE_URL=postgresql+psycopg2://doctor_assistant:doctor_assistant@localhost:5432/doctor_assistant \
 #   ORTHANC_URL=http://localhost:8042 ORTHANC_USERNAME=doctor_assistant ORTHANC_PASSWORD=doctor_assistant \
 #     uvicorn api.main:create_app --factory --reload
-#
-# This file is a deliberate landing spot to add OHIF/Redis later (see
-# RADIOLOGY_WORKFLOW_COPILOT_VISION.md Section 22.1) without a restructuring.
 #
 # Orthanc config verified against current upstream docs (orthanc.uclouvain.be), not
 # guessed, but this sandbox has no Docker to run it against — verify after
@@ -49,6 +46,27 @@ services:
       - "4242:4242"  # native DICOM protocol (C-STORE etc.), for pushing studies in
     volumes:
       - doctor_assistant_orthanc_data:/var/lib/orthanc/db
+
+  ohif:
+    build:
+      context: ../viewer/ohif
+      dockerfile: Dockerfile
+      args:
+        APP_CONFIG: config/doctor_assistant.js
+        PUBLIC_URL: /
+        PORT: 8080
+    environment:
+      PORT: "8080"
+      PUBLIC_URL: /
+    ports:
+      - "3000:8080"
+    depends_on:
+      - orthanc
+    volumes:
+      # Same-origin proxy for DICOMweb/WADO. This is what lets a browser at
+      # localhost:3000 read the authenticated Orthanc service without CORS or
+      # exposing credentials to viewer JavaScript.
+      - ./ohif-nginx.conf.template:/usr/src/default.conf.template:ro
 
 volumes:
   doctor_assistant_postgres_data:
