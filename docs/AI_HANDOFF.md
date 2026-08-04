@@ -276,17 +276,24 @@ this sandbox's GPU, 6GB VRAM, can't fit a 7B model; needs to run in Colab).
 `scripts/demo_totalsegmentator.py`, `notebooks/totalsegmentator_demo_colab.ipynb`) —
 CT organ segmentation, **Apache 2.0, no gate, no restriction** — the actual "real win"
 candidate. Confirmed installed and importable in a local sandbox (though full runs
-need a real GPU/Colab). The demo script downloads one case from TotalSegmentator's own
-official small-subset release (Zenodo record `10047263`, 102 subjects, ~3.2GB,
-resolved via Zenodo's API rather than a hardcoded filename) and prints real measured
-structure volumes using this repo's own `findings_from_label_counts` helper — this has
-been code-reviewed against the actually-installed package (`class_map` import,
-117-structure count) but **never actually executed end-to-end** (Zenodo's API was
-flaky/timing out from this sandbox when last tried; scoped to run in Colab instead).
-**Explicitly not yet built:** DICOM SEG conversion, or anything showing in the OHIF
-viewer. The Zenodo dataset is NIfTI with no DICOM series to attach a segmentation to —
-a NIfTI→DICOM synthesis step is needed first. This is real, well-scoped next work, not
-started.
+need a real GPU/Colab). The visual-proof demo was rebuilt on 2026-08-04: it pins
+TotalSegmentator 2.17.0, verifies Zenodo record `10047263`'s exact v2.0.1 filename and
+published MD5, extracts only the selected CT, stages inference under `/content`, and
+writes a geometry-checked `segmentation.nii.gz`, colored `preview.png`, organ-volume
+`measurements.json`, hashes/runtime provenance, and TotalSegmentator's own statistics
+and run report. The old script incorrectly passed an output *directory* with `ml=True`
+(the API requires a NIfTI file path), so that path could not have completed. The saved
+notebook outputs confirmed setup reached the L4 but the inference cell had never run;
+those stale partial outputs were cleared. **The rebuilt workflow still needs its first
+real Colab Run-all before claiming success.**
+
+**Explicitly not yet built:** anything showing in the OHIF viewer. The Zenodo sample is
+NIfTI and cannot directly produce a standards-valid DICOM SEG because it has no source
+DICOM instances/UIDs to reference. Do not synthesize DICOM merely to work around that:
+TotalSegmentator 2.17 can emit `output_type="dicom_seg"` directly (with `highdicom`)
+when given a real DICOM series. After the visual proof passes, use a properly
+de-identified DICOM CT, generate the SEG directly, upload it to Orthanc, and expose a
+read-only segmentation surface in the Clinique Amina mode.
 
 **Grad-CAM on KAD-512** — the licensing-clean alternative to MAIRA-2 for "AI
 highlights where it's looking" in the viewer. `explainability/gradcam.py` already
