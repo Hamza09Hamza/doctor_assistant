@@ -106,6 +106,30 @@ def _write_seg(
 
 
 class DicomSegWorkflowTests(unittest.TestCase):
+    def test_lidc_ct_download_resumes_an_incomplete_cached_series(self) -> None:
+        partial = mock.Mock(
+            series_instance_uid=lidc_demo.CT_SERIES_UID,
+            study_instance_uid=lidc_demo.STUDY_UID,
+            instance_count=17,
+        )
+        complete = mock.Mock(
+            series_instance_uid=lidc_demo.CT_SERIES_UID,
+            study_instance_uid=lidc_demo.STUDY_UID,
+            instance_count=lidc_demo.CT_INSTANCE_COUNT,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            (cache / "ct").mkdir()
+            with (
+                mock.patch.object(
+                    lidc_demo, "discover_ct_series", side_effect=[[partial], [complete]]
+                ),
+                mock.patch.object(lidc_demo, "_idc_download") as download,
+            ):
+                result = lidc_demo.ensure_ct(cache)
+        download.assert_called_once_with(lidc_demo.CT_SERIES_UID, cache / "ct")
+        self.assertEqual(result, cache / "ct")
+
     def test_lidc_demo_runs_nodule_task_and_builds_comparison_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -67,7 +67,14 @@ def _idc_download(series_uid: str, destination: Path) -> None:
 def ensure_ct(cache_dir: Path) -> Path:
     ct_dir = cache_dir / "ct"
     existing = discover_ct_series(ct_dir) if ct_dir.exists() else []
-    if not any(series.series_instance_uid == CT_SERIES_UID for series in existing):
+    matching = [series for series in existing if series.series_instance_uid == CT_SERIES_UID]
+    if not matching or matching[0].instance_count != CT_INSTANCE_COUNT:
+        if matching:
+            print(
+                f"Resuming incomplete CT download: found {matching[0].instance_count}/"
+                f"{CT_INSTANCE_COUNT} slices.",
+                flush=True,
+            )
         _idc_download(CT_SERIES_UID, ct_dir)
         existing = discover_ct_series(ct_dir)
     selected = select_ct_series(existing, CT_SERIES_UID)
