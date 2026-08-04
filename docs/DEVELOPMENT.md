@@ -84,8 +84,11 @@ export reads the reviewed singleton embeddings from the checksum-pinned
 PyTorch and CPU-kernel differences cannot break the semantic identity check. Canonical
 benchmarking also requires a clean worktree and records the deterministic inference
 controls, GPU/CPU identity, compute capability, CUDA runtime, cuDNN runtime, and NVIDIA
-driver in its evidence artifact. The canonical Colab notebook requires a T4 rather than
-silently mixing T4, L4, and A100 evidence. NumPy, SciPy, scikit-learn, pandas,
+driver in its evidence artifact. The canonical Colab notebook no longer locks to a single
+GPU class (it previously required a T4) — it accepts whatever accelerator Colab assigns
+(T4, L4, A100, ...) and relies on that per-run recorded GPU/compute-capability/CUDA/cuDNN
+identity to keep evidence traceable and segregable by accelerator, rather than preventing
+mixed-accelerator evidence by refusing to run on anything but one GPU class. NumPy, SciPy, scikit-learn, pandas,
 Pillow, and transformers are pinned in the notebook; the decision artifact separately
 hashes its calibration script and records the exact Python/NumPy/SciPy/scikit-learn
 versions.

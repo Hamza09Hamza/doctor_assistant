@@ -1,0 +1,16 @@
+# Phase 1 service boundary: FastAPI + PostgreSQL persistence.
+#
+# Install alongside requirements.txt:
+#   pip install -r requirements.txt -r requirements-api.txt
+#
+# psycopg2-binary is the production driver (talks to the Postgres run via
+# deployments/docker-compose.yml); the test suite overrides DATABASE_URL to a
+# disposable SQLite file instead, so running `python -m unittest` never needs a live
+# Postgres server.
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+python-multipart>=0.0.9
+httpx>=0.27

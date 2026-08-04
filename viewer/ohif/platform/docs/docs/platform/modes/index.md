@@ -1,0 +1,629 @@
+---
+sidebar_position: 1
+sidebar_label: Introduction
+title: Modes Introduction
+summary: Overview of OHIF Modes, which are specialized viewer configurations for specific clinical workflows, allowing multiple purpose-specific applications to coexist within a single OHIF deployment.
+---
+
+# Modes
+
+## Overview
+
+A mode can be thought of as a viewer app configured to perform a specific task,
+such as tracking measurements over time, 3D segmentation, a guided radiological
+workflow, etc. Addition of modes enables _application_ with many _applications_
+as each mode become a mini _app configuration_ behind the scene.
+
+Upon initialization the viewer will consume extensions and modes and build up
+the route desired, these can then be accessed via the study list, or directly
+via url parameters.
+
+<!-- > Modes make extensions (features) more reusable and powerful. -->
+
+OHIF-v3 architecture can be seen in the following:
+
+![mode-archs](../../assets/img/mode-archs.png)
+
+> Note: Templates are now a part of “extensions” Routes are configured by modes
+> and/or app
+
+As mentioned, modes are tied to a specific route in the viewer, and multiple
+modes/routes can be present within a single application. This allows for
+tremendously more flexibility than before you can now:
+
+- Simultaneously host multiple viewers with for different use cases from within
+  the same app deploy.
+- Make radiological viewers for specific purposes/workflows, e.g.:
+  - Tracking the size of lesions over time.
+  - PET/CT fusion workflows.
+  - Guided review workflows optimized for a specific clinical trial.
+- Still host one single feature-rich viewer if you desire.
+
+## Anatomy
+
+A mode configuration has a `route` name which is dynamically transformed into a
+viewer route on initialization of the application. Modes that are available to a
+study will appear in the study list.
+
+![user-study-summary](../../assets/img/user-study-summary.png)
+
+The mode configuration specifies which `extensions` the mode requires, which
+`LayoutTemplate` to use, and what props to pass to the template. For the default
+template this defines which `side panels` will be available, as well as what
+`viewports` and which `displaySets` they may hang.
+
+Mode's config is composed of these elements:
+- `id`: the mode `id`
+- `modeFactory`: the function that returns the mode specific configuration
+- `modeInstance`: An optional configuration used by the default modeFactory
+      exported by the basic mode.  This allows specifying or updating the
+      default mode values.
+- `extensionDependencies`: the list of extensions that the mode requires
+
+
+that return a config object with certain
+properties, the high-level view of this config object is:
+
+```js title="modes/example/src/index.js"
+function modeFactory({modeConfiguration}) {
+  return { ...this.modeInstance, ...modeConfiguration };
+
+}
+
+const mode = {
+  id,
+  modeFactory,
+  modeInstance: {
+    id: '',
+    version: '',
+    hide: true,
+    displayName: '',
+    onModeEnter: () => {},
+    onModeExit: () => {},
+    validationTags: {},
+    isValidMode: () => {},
+    routes: [
+      {
+        path: '',
+        init: () => {},
+        layoutInstance: {
+          id,
+          props: {
+            leftPanels: [],
+            leftPanelResizable: true,
+            rightPanels: [],
+            rightPanelClosed: true,
+            rightPanelResizable: true,
+            viewports: [],
+          },
+        },
+        layoutTemplate: function() { return this.layoutInstance },
+      },
+    ],
+    extensions: extensionDependencies,
+    hangingProtocol: [],
+    sopClassHandlers: [],
+    hotkeys: [],
+    nonModeModalities: [],
+    modeModalities: [],
+  },
+  extensionDependencies,
+};
+
+export default mode;
+```
+
+<table>
+  <thead>
+    <tr>
+      <th align="left">Property</th>
+      <th align="left">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="left">
+          id
+      </td>
+      <td align="left">unique mode id used to refer to the mode</td>
+    </tr>
+    <tr>
+      <td align="left">
+          hide
+      </td>
+      <td align="left">Set to true to hide this mode on the worklist, but allow it in the path</td>
+    </tr>
+    <tr>
+      <td align="left">
+          displayName
+      </td>
+      <td align="left">actual name of the mode being displayed for each study in the study summary panel</td>
+    </tr>
+    <tr>
+      <td align="left">
+        <a href="./lifecycle#onModeEnter">
+          onModeEnter
+        </a>
+      </td>
+      <td align="left">hook is called when the mode is entered by the specified route</td>
+    </tr>
+    <tr>
+      <td align="left">
+        <a href="./lifecycle#onModeExit">
+          onModeExit
+        </a>
+      </td>
+      <td align="left">hook is called when the mode exited</td>
+    </tr>
+    <tr>
+      <td align="left">
+        <a href="">
+          validationTags
+        </a>
+      </td>
+      <td align="left">validationTags</td>
+    </tr>
+    <tr>
+      <td align="left">
+        <a href="">
+          isValidMode
+        </a>
+      </td>
+      <td align="left">Checks if the mode is valid for a study</td>
+    </tr>
+    <tr>
+      <td align="left">
+        <a href="">
+          routes
+        </a>
+      </td>
+      <td align="left">route config which defines the route address, and the layout for it</td>
+    </tr>
+    <tr>
+      <td align="left">
+        <a href="./index#consuming-extensions">
+          extensionDependencies
+        </a>
+      </td>
+      <td align="left">extensions needed by the mode</td>
+    </tr>
+    <tr>
+      <td align="left">
+        <a href="">
+          hanging protocol
+        </a>
+      </td>
+      <td align="left">list of hanging protocols that the mode applies initially, choosing the highest scoring match</td>
+    </tr>
+    <tr>
+      <td align="left">
+        <a href="">
+          sopClassHandlers
+        </a>
+      </td>
+      <td align="left">list of SOPClass modules needed by the mode </td>
+    </tr>
+    <tr>
+      <td align="left">
+        <a href="">
+          hotkeys
+        </a>
+      </td>
+      <td align="left">hotkeys</td>
+    </tr>
+    <tr>
+      <td align="left">
+          modeModalities
+      </td>
+      <td align="left">If non-empty, then the default isValidMode will only return true when the modalities list has all of the elements of one of the mode modalities.  Eg `[` [CT,PT], [MR,PT] ]` would mean that the mode supports a CT AND a PT,  OR an MR and a PT</td>
+    </tr>
+    <tr>
+      <td align="left">
+          nonModeModalities
+      </td>
+      <td align="left">Enable the mode if the modalities list contains a modality OTHER than those in the array</td>
+    </tr>
+    <tr>
+      <td align="left">
+          excludedModalities
+      </td>
+      <td align="left">The default isValidMode returns false when the modalities list contains ANY of these</td>
+    </tr>
+    <tr>
+      <td align="left">
+          excludedStudies
+      </td>
+      <td align="left">A list of study attribute objects; the default isValidMode returns false for a study matching every attribute of any entry, e.g. <code>[&#123; mrn: 'M1' &#125;]</code></td>
+    </tr>
+    <tr>
+      <td align="left">
+          toolbarSections
+      </td>
+      <td align="left">Toolbar section composition: a list of section-layout packs (as <code>$reference</code> markers) and/or literal section objects; seeded onto the Mode scope on enter</td>
+    </tr>
+    <tr>
+      <td align="left">
+          toolbarButtons
+      </td>
+      <td align="left">Toolbar button composition: a list of button packs (as <code>$reference</code> markers) and/or literal button definitions; seeded onto the Mode scope on enter</td>
+    </tr>
+    <tr>
+      <td align="left">
+          toolGroupAdditions
+      </td>
+      <td align="left">Per-tool-group composition: a map of tool-group id to a list of tool packs (as <code>$reference</code> markers) and/or literal tool blocks, layered onto the mode's tool groups after creation</td>
+    </tr>
+    <tr>
+      <td align="left">
+          initToolGroups
+      </td>
+      <td align="left">Tool group setup function called by the shared onModeEnter as <code>initToolGroups(&#123; extensionManager, toolGroupService, commandsManager, servicesManager &#125;)</code>; extending modes can substitute their own</td>
+    </tr>
+    <tr>
+      <td align="left">
+          modeCustomizations
+      </td>
+      <td align="left">The mode's own customizations, applied by the mode route as the bottom layer of the mode scope on enter — before the app config / URL <code>mode</code> phase blocks, and below global-scope customizations, so final values are decided purely by scope precedence and application order. Usually the name of a block the extension registers at default scope (e.g. <code>basicModeCustomizations</code>, which sets <code>panelSegmentation.disableEditing</code>); may also be a literal object of immutability-helper commands or an array mixing those with customization module reference strings</td>
+    </tr>
+    <tr>
+      <td align="left">
+          activatePanelTriggers
+      </td>
+      <td align="left">Data-driven ActivatePanel event triggers: a list of <code>&#123; panelId, sourceServiceName, sourceEvents, forceActive? &#125;</code> entries wired up on mode enter (e.g. activating the segmentation panel when a segmentation is added). Empty by default; see <code>defaultActivatePanelTriggers</code> in the basic mode</td>
+    </tr>
+
+
+  </tbody>
+</table>
+
+### Extending Modes
+
+The `basic` mode provides support for creating mode extensions without having
+to redeclare the entire mode.  See `longitudinal/src/index.ts` for an example
+mode that builds on top of the basic mode.  Also see `basic/src/index.tsx` for
+some default functions which can be used to create your own modes.  Doing a mode
+this way makes the definition of new modes based on your existing mode much easier,
+and the upgrade to new versions of modes tends to be more consistent.
+
+The **`segmentation`** and **`tmtv`** modes now follow this same pattern. Like
+`longitudinal`, each one exports a `modeInstance` object and reuses the `basic`
+mode's `modeFactory`, so they are extensible in two complementary ways:
+
+1. **Build a derived mode** — create a new mode package (for example
+   `mySegmentation`) that imports the shipped mode and overrides only the parts
+   you need, exactly like `longitudinal` builds on `basic`.
+2. **Customize an existing mode at runtime** — change a shipped mode's toolbar,
+   tools, or panels through per-mode customization keys, with no new package.
+
+#### Building a derived mode
+
+A derived mode imports the shipped mode's default export (which carries the
+`modeFactory`) and its `modeInstance`, then spreads and overrides. Because the
+default `modeFactory` applies [immutability-helper][immutability-helper]
+commands from `modeConfiguration` onto `modeInstance`, you can also override
+via `modeConfiguration` rather than editing the instance directly.
+
+```js title="modes/my-segmentation/src/index.tsx"
+import segmentationMode, { modeInstance as segModeInstance } from '@ohif/mode-segmentation';
+
+const id = 'mySegmentation';
+
+export const modeInstance = {
+  ...segModeInstance,
+  id,
+  routeName: 'mySegmentation',
+  displayName: 'My Segmentation',
+  // Override only what you need. Toolbar buttons/sections and tool group
+  // additions are plain composition arrays on the instance naming the
+  // capability packs the mode uses (see below); panel lists are literal
+  // arrays in the layout. Both are customized at runtime via the `mode` phase.
+};
+
+const mode = {
+  ...segmentationMode, // carries modeFactory + extensionDependencies
+  id,
+  modeInstance,
+};
+
+export default mode;
+```
+
+The `tmtv` mode is extended the same way — import `@ohif/mode-tmtv` and its
+`modeInstance`, then override.
+
+#### Customizing a mode at runtime
+
+The `basic`, `longitudinal`, `segmentation`, and `tmtv` modes declare their toolbar
+buttons, toolbar sections, and tool-group additions as plain composition arrays on
+the mode instance that name the capability packs the mode uses with `{ $reference }`
+markers (for example
+`toolbarButtons: [{ $reference: 'cornerstone.toolbarButtons' }, { $reference: 'cornerstone.segmentationToolbarButtons' }]`).
+The mode route seeds these onto the Mode customization scope on enter, alongside the
+`leftPanels` / `rightPanels` panel lists. Because the values are lists whose
+`{ $reference }` entries the customization service expands at read time, a `window.config`
+entry or a `?customization=` JSON module can add a whole capability pack (such as the
+segmentation editing tools), remove a default, or swap the panels — targeting the mode
+through a `mode` phase block (`mode.basic`, `mode.segmentation`, ...) without building
+a new mode. See [Compose whole capability blocks into a mode][compose-capability-blocks] in the
+Customization Service docs for the full key table, the reusable capability
+blocks, and worked examples (adding segmentation editing to the basic and
+longitudinal modes, and enabling annotation tools inside the segmentation mode).
+
+[immutability-helper]: https://github.com/kolodny/immutability-helper
+[compose-capability-blocks]: ../services/customization-service/specificCustomizations.md#4-compose-whole-capability-blocks-into-a-mode
+
+### Consuming Extensions
+
+As mentioned in the [Extensions](../extensions/index.md) section, in `OHIF-v3`
+developers write their extensions to create reusable functionalities that later
+can be used by `modes`. Now, it is time to describe how the registered
+extensions will get utilized for a workflow mode via its `id`.
+
+Each `mode` has a list of its `extensions dependencies` which are the
+the `extension` name and version number. In addition, to use a module element you can use the
+`${extensionId}.${moduleType}.${element.name}` schema. For instance, if a mode
+requires the left panel with name of `AIPanel` that is added by the
+`myAIExtension` via the following `getPanelModule` code, it should address it as
+`myAIExtension.panelModule.AIPanel` inside the mode configuration file. In the
+background `OHIF` will handle grabbing the correct panel via `ExtensionManager`.
+
+```js title="extensions/myAIExtension/getPanelModule.js"
+import PanelAI from './PanelAI.js';
+
+function getPanelModule({
+  commandsManager,
+  extensionManager,
+  servicesManager,
+}) {
+  const wrappedAIPanel = () => {
+    return (
+      <PanelAI
+        commandsManager={commandsManager}
+        servicesManager={servicesManager}
+      />
+    );
+  };
+
+  return [
+    {
+      name: 'AIPanel',
+      iconName: 'list-bullets',
+      iconLabel: '',
+      label: 'AI Panel',
+      isDisabled: studies => {}, // optional
+      component: wrappedAIPanel,
+    },
+  ];
+}
+```
+
+Now, let's look at a simplified code of the `basic viewer` mode which consumes various functionalities
+from different extensions.
+
+```js
+
+const extensionDependencies = {
+  '@ohif/extension-default': '^3.0.0',
+  '@ohif/extension-cornerstone': '^3.0.0',
+  '@ohif/extension-measurement-tracking': '^3.0.0',
+};
+
+const id = 'viewer';
+const version = '3.0.0';
+
+function modeFactory({ modeConfiguration }) {
+  return {
+    id,
+    // ...
+    routes: [
+      {
+        // ...
+        layoutTemplate: ({ location, servicesManager }) => {
+          return {
+            id: ohif.layout,
+            props: {
+              leftPanels: ['@ohif/extension-measurement-tracking.panelModule.seriesList'],
+              rightPanels: ['@ohif/extension-measurement-tracking.panelModule.trackedMeasurements'],
+              viewports: [
+                {
+                  namespace: '@ohif/extension-measurement-tracking.viewportModule.cornerstone-tracked',
+                  displaySetsToDisplay: ['@ohif/extension-default.sopClassHandlerModule.stack'],
+                },
+              ],
+            },
+          };
+        },
+      },
+    ],
+    extensions: extensionDependencies,
+    hangingProtocol: ['@ohif/extension-default.hangingProtocolModule.petCT'],
+    sopClassHandlers: ['@ohif/extension-default.sopClassHandlerModule.stack'],
+    // ...
+  };
+}
+
+const mode = {
+  id,
+  modeFactory,
+  extensionDependencies,
+}
+
+export default mode
+```
+
+### Routes
+
+routes config is an array of route settings, and the overall look and behavior
+of the viewer at the designated route is defined by the `layoutTemplate` and
+`init` functions for the route. We will learn more about each of the above
+properties inside the [route documentation](./routes.md)
+
+
+### HangingProtocols
+
+Currently, you can pass your defined hanging protocols inside the
+`hangingProtocols` property of the mode's config. If you specify the hanging protocol
+explicitly by its name (only string and not array), it will be THE hanging protocol
+that the mode runs with. However, if you specify an array of hanging protocols,
+they will get ranked based on the displaySetSelector requirements and the winner
+will be the hanging protocol that the mode runs with.
+
+
+### SopClassHandlers
+
+Mode's configuration also accepts the `sopClassHandler` modules that have been
+added by the extensions. This information will get used to initialize `DisplaySetService` with the provided SOPClass modules which
+handles creation of the displaySets.
+
+
+### Hotkeys
+
+`hotkeys` is another property in the configuration of a mode that can be defined
+to add the specific hotkeys to the viewer on the mode route.  Additionally, the
+name under which the hotkeys are stored can be configured as `hotkeyName`.
+This allows user customization of the mode specific hotkeys.
+
+```js
+// default hotkeys
+import { utils } from '@ohif/ui';
+
+const { hotkeys } = utils;
+
+const myHotkeys = [
+  {
+    commandName: 'setToolActive',
+    commandOptions: { toolName: 'Zoom' },
+    label: 'Zoom',
+    keys: ['z'],
+    isEditable: true,
+  },
+  {
+    commandName: 'scaleUpViewport',
+    label: 'Zoom In',
+    keys: ['+'],
+    isEditable: true,
+  },
+]
+
+function modeFactory() {
+  return {
+    id: '',
+    displayName: '',
+    /*
+    ...
+    */
+    hotkeys: {
+      // The name in preferences to use for this set of hotkeys
+      // Allows defining different sets for different modes
+      name: 'custom-hotkey-name',
+      // And the actual custom values here.
+      hotkeys:[..hotkeys.defaults.hotkeyBindings, ...myHotkeys]
+    },
+  }
+}
+
+// exports
+```
+
+
+
+
+
+## Registration
+
+Similar to extension registration, `viewer` will look inside the `pluginConfig.json` to
+find the `modes` to register.
+
+
+```js title=platform/app/pluginConfig.json
+// Simplified version of the `pluginConfig.json` file
+{
+  "extensions": [
+    {
+      "packageName": "@ohif/extension-cornerstone",
+      "version": "3.4.0"
+    },
+    // ...
+  ],
+  "modes": [
+    {
+      "packageName": "@ohif/mode-longitudinal",
+      "version": "3.4.0"
+    }
+  ]
+}
+```
+
+:::note
+You can register modes by editing the `pluginConfig.json` file directly.
+The provided `cli` can also add/remove/install/uninstall modes
+([read more](../../development/ohif-cli.md)), but it is being phased out in
+favour of generating modes with an agent.
+:::
+
+For the full set of entry fields and the three ways a plugin can be located
+(in-tree, out-of-tree `directory`, or installed dependency), see the
+[pluginConfig.json reference](../extensions/pluginConfig.md).
+
+The final registration and import of the modes happen inside a non-tracked file `pluginImport.js` (this file is also for internal use only).
+
+
+:::note
+You can stack multiple panel components on top of each other by providing an array of panel components in the `rightPanels` or `leftPanels` properties.
+
+For instance we can use
+
+```
+rightPanels: [[dicomSeg.panel, tracked.measurements], [dicomSeg.panel, tracked.measurements]]
+```
+
+This will result in two panels, one with `dicomSeg.panel` and `tracked.measurements` and the other with `dicomSeg.panel` and `tracked.measurements` stacked on top of each other.
+
+:::
+
+## APP Configuration of Modes
+
+Modes based on the `basic` mode allow for customization using the `immutability-helper`
+api within the `app-config.js` file as specified by the build process.  For example,
+to list the `basic` mode by default, and hide the `longitudinal` mode, the following
+configuration from `config/kheops.js` can be used:
+
+```
+... app config file
+  modesConfiguration: {
+    '@ohif/mode-basic': {
+      hide: { $set: false },
+      displayName: { $set: 'Basic' },
+    },
+    '@ohif/mode-longitudinal': {
+      hide: { $set: true },
+    },
+  },
+```
+
+## Default Modes
+
+There are a number of modes provided in a default OHIF installation.  These
+are described here, along with some amount of information about extending/configuration
+of those modes.
+
+Modes which are loaded by default, but which are hidden can be activated by
+using a direct URL launch.  For example, to show a study in the `basic` mode,
+use the URL for the `longitudinal` mode, and replace the `/viewer` with `/basic`
+
+### Basic (NOT `Basic Viewer`, which got assigned to `longitudinal`)
+
+The basic mode is a mode that demonstrates the base capabilities of the OHIF
+system, without including features such as longitudinal tracking, segmentation editing
+or other custom capabilities. The left hand panel uses the study browser thumbnails
+without tracking, and the right hand panel uses the basic segmentation panel and the
+measurements without tracking (longitudinal) layouts.  This makes it a good overall
+base for using when the tracking behaviour of longitudinal mode is not desired.
+
+It can be used in a default install by direct URL launch to the `/basic` endpoint
+instead of the `/viewer` endpoint.
+
+### Longitudinal (The `Basic Viewer` label in OHIF)
+
+The longitudinal mode adds the tracking for measurements in the study browser
+and in the measurements panel, and is otherwise identical to the `basic` mode.

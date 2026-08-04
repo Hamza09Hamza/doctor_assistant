@@ -1,0 +1,55 @@
+# Local development services for the API (see api/, requirements-api.txt): Postgres
+# (Phase 1) and Orthanc + DICOMweb (Phase 2).
+#
+# Usage:
+#   docker compose -f deployments/docker-compose.yml up -d
+#   DATABASE_URL=postgresql+psycopg2://doctor_assistant:doctor_assistant@localhost:5432/doctor_assistant \
+#   ORTHANC_URL=http://localhost:8042 ORTHANC_USERNAME=doctor_assistant ORTHANC_PASSWORD=doctor_assistant \
+#     uvicorn api.main:create_app --factory --reload
+#
+# This file is a deliberate landing spot to add OHIF/Redis later (see
+# RADIOLOGY_WORKFLOW_COPILOT_VISION.md Section 22.1) without a restructuring.
+#
+# Orthanc config verified against current upstream docs (orthanc.uclouvain.be), not
+# guessed, but this sandbox has no Docker to run it against — verify after
+# `docker compose up` that DICOMweb is actually active before relying on it:
+#   curl -u doctor_assistant:doctor_assistant http://localhost:8042/dicom-web/studies
+# A non-200 here means the plugin-activation env var below needs adjusting against
+# whatever the pulled image version actually expects.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: doctor_assistant
+      POSTGRES_PASSWORD: doctor_assistant
+      POSTGRES_DB: doctor_assistant
+    ports:
+      - "5432:5432"
+    volumes:
+      - doctor_assistant_postgres_data:/var/lib/postgresql/data
+
+  orthanc:
+    image: orthancteam/orthanc:24.5.3
+    environment:
+      DICOM_WEB_PLUGIN_ENABLED: "true"
+      ORTHANC__REGISTERED_USERS: '{"doctor_assistant": "doctor_assistant"}'
+      ORTHANC_JSON: |
+        {
+          "Name": "doctor_assistant-orthanc",
+          "DicomWeb": {
+            "Enable": true,
+            "Root": "/dicom-web/"
+          },
+          "RemoteAccessAllowed": true,
+          "AuthenticationEnabled": true
+        }
+    ports:
+      - "8042:8042"  # REST API + DICOMweb (QIDO-RS/WADO-RS under /dicom-web/)
+      - "4242:4242"  # native DICOM protocol (C-STORE etc.), for pushing studies in
+    volumes:
+      - doctor_assistant_orthanc_data:/var/lib/orthanc/db
+
+volumes:
+  doctor_assistant_postgres_data:
+  doctor_assistant_orthanc_data:

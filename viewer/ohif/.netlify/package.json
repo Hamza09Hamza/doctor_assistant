@@ -1,0 +1,14 @@
+{
+  "name": "root",
+  "private": true,
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "deploy": "netlify deploy --prod --dir ./../platform/app/dist"
+  },
+  "devDependencies": {
+    "netlify-cli": "2.21.0"
+  }
+}

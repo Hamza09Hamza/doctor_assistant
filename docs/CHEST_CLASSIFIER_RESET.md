@@ -156,7 +156,12 @@ images are allowed for development ranking only. Official filenames do not make
 resized JPEGs equivalent to the original NIH PNGs; locked evaluation requires the
 original pixels and binds their hashes into the test lock.
 
-## One-T4 experiment ladder
+## Experiment ladder
+
+Runs are not locked to a single GPU class (previously T4-only) — the notebook accepts
+whatever accelerator the Colab session assigns, and `benchmark_kad.py` records the exact
+GPU/compute-capability/CUDA/cuDNN identity in every result's runtime contract, so evidence
+stays traceable and segregable per accelerator without refusing to run on anything else.
 
 ### Gate 0 — pipeline sanity
 
@@ -313,34 +318,53 @@ threshold selection may use the untouched acceptance role.
 
 ## Colab artifact layout
 
-Large image shards should be copied from Drive to `/content` before training;
-training must not open 100,000 individual files through Drive FUSE. Drive stores
-only durable inputs and outputs:
+Large image shards should be copied from Drive to `/content` before inference;
+the pipeline must not open thousands of individual files through Drive FUSE.
+Drive stores only durable inputs and outputs, under
+`MyDrive/doctor_assistant/kad_phase1/` (`DRIVE_ROOT` in the notebook). This is
+the **actual current layout implemented by
+`notebooks/chest_classifier_build_colab.ipynb`** — an earlier version of this
+section showed an illustrative, aspirational tree (`data_manifests/
+nih_official_manifest.jsonl`, `models/chest_xray/pneumothorax/<experiment-id>/
+{best.pt, last.pt, ...}`) that never matched what the code actually produces;
+corrected here to the real paths:
 
 ```text
-doctor_assistant/
-  data_manifests/
-    nih_official_manifest.jsonl
-    expert_development.csv
-    expert_test.csv
-  models/chest_xray/
-    kad-512-source/
-    pneumothorax/<experiment-id>/
-      manifest.json
-      best.pt
-      last.pt
-      predictions.npz
-      calibration.json
-      thresholds.json
-      results.json
+doctor_assistant/kad_phase1/            # DRIVE_ROOT
+  models/
+    kad-512-official.pt                 # pinned checkpoint, size+SHA-256 verified
+    kad-512-phase1-<target>-single-query-v3-pil.pt   # cached per-endpoint query pack
+  data/
+    expert_manifest/
+      nih_expert_labels.csv             # canonical development manifest (CANONICAL_MANIFEST)
+      nih_expert_labels.metadata.json
+    nih_expert_development_320/         # schema-1 320px mirror, diagnostic-only fallback
+      DEVELOPMENT_ONLY.provenance.json
+    nih_original_development/           # schema-2 original pixels, when present (Gate 3/4 eligible)
+      ORIGINAL_NIH_PIXELS.provenance.json
+  results/
+    <run-id>/                           # RUN_ID = <target>-<git-sha12>-<config-sha256[:12]>-<utc-timestamp>
+      kad_phase1_development.json       # benchmark_kad.py output (one score column, schema_version 1)
+      kad_phase1_development.predictions.npz
+      <target>_decision.json            # calibrate_kad_phase1.py output: thresholds, acceptance status
 ```
 
-Every experiment uses a new immutable directory whose ID includes the endpoint,
-Git commit, evaluation-config hash, and UTC timestamp. It records the source
-model and checkpoint hash, canonical endpoint query-set ID and query-pack semantic hash,
-data-manifest hash, prompts, target definition, preprocessing, seed,
-optimizer/loss configuration, patient-role fractions, and environment versions.
-The runtime contract also binds accelerator name, compute capability, memory,
-CUDA/cuDNN runtime, and driver; the canonical notebook is T4-only.
-Evidence artifacts are never silently overwritten, and legacy `best.pt` is
-never overwritten.
+There is no `best.pt`/`last.pt`/training-checkpoint layout anywhere in this
+tree, because Gate 1-4 as currently implemented is **zero-shot evaluation
+only** — no training or fine-tuning loop exists for KAD-512. (A separate,
+unrelated legacy training loop with real checkpoint/resume support does exist
+at `training/trainer.py`, but it's wired to the retired 14-label DenseNet
+classifier, not KAD-512.) A `best.pt`/`last.pt`-style layout would only become
+relevant if Gate 2 controlled adaptation is ever built — see Gate 2 above:
+"Only if Gate 1 shows useful separation."
+
+Every result directory (`results/<run-id>/`) is a new, immutable, timestamped
+directory whose ID includes the endpoint, Git commit, and evaluation-config
+hash — re-running never overwrites a prior run's evidence. The benchmark JSON
+records the source model and checkpoint hash, canonical endpoint query-set ID
+and query-pack semantic hash, data-manifest hash, prompts, target definition,
+preprocessing, seed, patient-role fractions, and environment versions. The
+runtime contract also binds accelerator name, compute capability, memory,
+CUDA/cuDNN runtime, and driver — the notebook does not restrict which GPU
+class Colab assigns (previously T4-only); this per-run recorded identity is
+what keeps evidence traceable and segregable by accelerator instead.

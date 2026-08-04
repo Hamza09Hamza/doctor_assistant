@@ -44,3 +44,12 @@ outputs/
 .idea/
 .vscode/
 .claude/
+
+# Vendored OHIF viewer (viewer/ohif/) — source is committed per the chosen
+# "vendor as subdirectory" layout, but build artifacts/dependencies are not.
+viewer/ohif/**/node_modules/
+viewer/ohif/**/dist/
+viewer/ohif/**/.rspack-cache/
+viewer/ohif/**/.webpack-cache/
+viewer/ohif/.pnpm-store/
+viewer/ohif/*.tsbuildinfo

@@ -1,0 +1,48 @@
+{
+  "name": "@doctor-assistant/mode-doctor-assistant",
+  "version": "0.0.1",
+  "description": "doctor_assistant review mode: stock viewer + AI findings panel",
+  "author": "doctor_assistant",
+  "license": "MIT",
+  "main": "dist/doctor-assistant-mode.umd.js",
+  "module": "src/index.ts",
+  "engines": {
+    "node": ">=24"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "shx rm -rf dist",
+    "clean:deep": "pnpm run clean && shx rm -rf node_modules",
+    "dev": "cross-env NODE_ENV=development rspack build --config .webpack/webpack.dev.js --watch",
+    "build": "cross-env NODE_ENV=production rspack build --config .webpack/webpack.prod.js",
+    "build:package": "pnpm run build",
+    "start": "pnpm run dev",
+    "test:unit": "jest --watchAll",
+    "test:unit:ci": "jest --ci --runInBand --collectCoverage --passWithNoTests"
+  },
+  "peerDependencies": {
+    "@ohif/core": "workspace:*",
+    "@ohif/extension-default": "workspace:*",
+    "@ohif/extension-cornerstone": "workspace:*",
+    "@ohif/extension-cornerstone-dicom-sr": "workspace:*",
+    "@ohif/extension-cornerstone-dicom-seg": "workspace:*",
+    "@ohif/extension-cornerstone-dicom-pmap": "workspace:*",
+    "@ohif/extension-cornerstone-dicom-rt": "workspace:*",
+    "@ohif/extension-dicom-pdf": "workspace:*",
+    "@ohif/extension-dicom-video": "workspace:*",
+    "@doctor-assistant/extension-doctor-assistant": "workspace:*"
+  },
+  "dependencies": {
+    "@babel/runtime": "7.29.7",
+    "@ohif/mode-basic": "workspace:*"
+  },
+  "devDependencies": {
+    "cross-env": "7.0.3"
+  },
+  "keywords": [
+    "ohif-mode"
+  ]
+}

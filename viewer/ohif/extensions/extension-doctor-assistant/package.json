@@ -1,0 +1,43 @@
+{
+  "name": "@doctor-assistant/extension-doctor-assistant",
+  "version": "0.0.1",
+  "description": "Candidate-findings panel backed by the doctor_assistant API (see ../../../../api/)",
+  "author": "doctor_assistant",
+  "license": "MIT",
+  "main": "dist/doctor-assistant-extension.umd.js",
+  "module": "src/index.tsx",
+  "engines": {
+    "node": ">=24"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "shx rm -rf dist",
+    "clean:deep": "pnpm run clean && shx rm -rf node_modules",
+    "dev": "cross-env NODE_ENV=development rspack build --config .webpack/webpack.dev.js --watch",
+    "build": "cross-env NODE_ENV=production rspack build --config .webpack/webpack.prod.js",
+    "build:package": "pnpm run build",
+    "start": "pnpm run dev",
+    "test:unit": "jest --watchAll",
+    "test:unit:ci": "jest --ci --runInBand --collectCoverage --passWithNoTests"
+  },
+  "peerDependencies": {
+    "@ohif/core": "workspace:*",
+    "@ohif/i18n": "workspace:*",
+    "@ohif/ui": "workspace:*",
+    "@ohif/ui-next": "workspace:*",
+    "prop-types": "15.8.1",
+    "react": "18.3.1"
+  },
+  "dependencies": {
+    "@babel/runtime": "7.29.7"
+  },
+  "devDependencies": {
+    "cross-env": "7.0.3"
+  },
+  "keywords": [
+    "ohif-extension"
+  ]
+}

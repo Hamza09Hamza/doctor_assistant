@@ -1,0 +1,334 @@
+@import './assets/fonts.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* OHIF Theme */
+
+@layer base {
+  /* Clinique Amina brand theme — v2 of the light-first, general-audience
+   * redesign (see docs/CLINIQUE_AMINA_REDESIGN.md for the full history and
+   * rationale). Still light-first and not dark-native for the same reason as
+   * v1 (this product's audience is explicitly non-radiologist patients, not
+   * a reading-room), but deepened for a real clinic brand:
+   *   - Primary moved from a flatter medical teal (192° 82% 31%) to a richer,
+   *     deeper emerald-teal (174° 62% 24%) — reads as "boutique clinic",
+   *     not "generic SaaS teal".
+   *   - Accent moved OFF health-green (142°, which collided semantically
+   *     with the success-badge token below — two different "green" meanings
+   *     competing) onto warm gold (38° 68% 42%), the "premium" signal used
+   *     for the brand wordmark and CTA accents. Positive/success meaning now
+   *     lives only in the success-* badge tokens, not in --accent.
+   *   - Background deepened from a pale ivory (36° 33% 98%) to a warmer,
+   *     slightly richer cream (34° 42% 96.5%) — closer to boutique-hospitality
+   *     off-white than hospital-white, while staying easily light enough for
+   *     AA body-text contrast against --foreground.
+   * See themes.css for the swappable-preset pattern this follows; this block
+   * is the "default" (no body class) slot.
+   */
+  :root {
+    --highlight: 174 62% 24%;
+    --neutral: 30 10% 42%;
+    --neutral-light: 32 22% 85%;
+    --neutral-dark: 28 14% 20%;
+    --background: 34 42% 96.5%;
+    --foreground: 20 18% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 20 18% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 20 18% 14%;
+    --primary: 174 62% 24%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 174 40% 93%;
+    --secondary-foreground: 174 55% 16%;
+    --muted: 34 25% 94%;
+    --muted-foreground: 20 10% 40%;
+    --accent: 38 68% 42%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 32 22% 87%;
+    --input: 32 18% 84%;
+    --ring: 174 62% 30%;
+    --chart-1: 174 55% 34%;
+    --chart-2: 38 68% 48%;
+    --chart-3: 200 60% 45%;
+    --chart-4: 0 65% 55%;
+    --chart-5: 265 35% 52%;
+    --radius: 0.875rem;
+    /* Elevation — v1 of this theme had zero shadows anywhere (pure flat/bordered
+     * cards), which read as "default component library," not "considered brand."
+     * Both shadows are tinted toward --primary's hue (174°) instead of neutral
+     * black, at very low opacity — a deliberate, subtle "colored shadow" that
+     * reads as intentional rather than a raw box-shadow default. Consumed via
+     * the `.shadow-brand`/`.shadow-brand-lg` utilities below, not raw CSS vars
+     * directly, so call sites stay readable. */
+    --shadow-brand-sm: 0 1px 2px hsl(174 40% 20% / 0.06), 0 1px 1px hsl(174 40% 20% / 0.04);
+    --shadow-brand: 0 4px 16px hsl(174 45% 18% / 0.08), 0 1px 3px hsl(174 45% 18% / 0.06);
+    --shadow-brand-lg: 0 12px 32px hsl(174 45% 16% / 0.12), 0 2px 6px hsl(174 45% 16% / 0.06);
+    /* Hover/active shades for primary and accent — the stock Button component
+     * only darkens via opacity (bg-primary/85 -> /100), which barely moves on a
+     * saturated color. These give a real, visible state change. */
+    --primary-hover: 174 68% 19%;
+    --accent-hover: 38 74% 36%;
+    /* Badge tokens carry the ONLY "positive/green" meaning in this palette now
+     * that --accent moved to gold — no more collision between "success" and
+     * "brand accent". info's hue (192°) is intentionally left distinct from
+     * the new 174° primary: close enough to still read as "medical blue-teal
+     * family", far enough that info toasts don't look like mislabeled brand
+     * chrome. */
+    --success-bg: hsl(150, 55%, 94%);
+    --success-border: hsl(150, 45%, 82%);
+    --success-text: hsl(150, 65%, 22%);
+
+    --info-bg: hsl(192, 75%, 94%);
+    --info-border: hsl(192, 55%, 80%);
+    --info-text: hsl(192, 85%, 26%);
+
+    --warning-bg: hsl(38, 90%, 94%);
+    --warning-border: hsl(38, 70%, 80%);
+    --warning-text: hsl(28, 85%, 32%);
+
+    --error-bg: hsl(0, 80%, 95%);
+    --error-border: hsl(0, 65%, 85%);
+    --error-text: hsl(0, 70%, 34%);
+  }
+
+  /* Compatibility shim only — no dark-mode toggle exists or is planned;
+   * mirrors :root exactly so any stock component that force-applies `.dark`
+   * doesn't flip to a jarring dark surface while everything else is light. */
+  .dark {
+    --background: 34 42% 96.5%;
+    --foreground: 20 18% 14%;
+    --card: 0 0% 100%;
+    --card-foreground: 20 18% 14%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 20 18% 14%;
+    --primary: 174 62% 24%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 174 40% 93%;
+    --secondary-foreground: 174 55% 16%;
+    --muted: 34 25% 94%;
+    --muted-foreground: 20 10% 40%;
+    --accent: 38 68% 42%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 32 22% 87%;
+    --input: 32 18% 84%;
+    --ring: 174 62% 30%;
+    --chart-1: 174 55% 34%;
+    --chart-2: 38 68% 48%;
+    --chart-3: 200 60% 45%;
+    --chart-4: 0 65% 55%;
+    --chart-5: 265 35% 52%;
+    --primary-hover: 174 68% 19%;
+    --accent-hover: 38 74% 36%;
+  }
+}
+
+@layer components {
+  /* Brand elevation utilities — see the --shadow-brand-* token comments in
+   * :root above. Kept as component-layer classes (not inline arbitrary
+   * `shadow-[...]` at every call site) so the "how elevated is this card"
+   * decision stays in one place. */
+  .shadow-brand-sm {
+    box-shadow: var(--shadow-brand-sm);
+  }
+  .shadow-brand {
+    box-shadow: var(--shadow-brand);
+  }
+  .shadow-brand-lg {
+    box-shadow: var(--shadow-brand-lg);
+  }
+  .bg-primary-hover {
+    background-color: hsl(var(--primary-hover));
+  }
+  .bg-accent-hover {
+    background-color: hsl(var(--accent-hover));
+  }
+}
+
+/* ORIGINAL THEME for comparison and testing
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 72.22% 50.59%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 5% 64.9%;
+    --radius: 0.5rem;
+
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+  }
+
+
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 85.7% 97.3%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+  }
+}
+
+*/
+
+/* Theme Copy Example
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 224 71.4% 4.1%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 71.4% 4.1%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 71.4% 4.1%;
+    --primary: 262.1 83.3% 57.8%;
+    --primary-foreground: 210 20% 98%;
+    --secondary: 220 14.3% 95.9%;
+    --secondary-foreground: 220.9 39.3% 11%;
+    --muted: 220 14.3% 95.9%;
+    --muted-foreground: 220 8.9% 46.1%;
+    --accent: 220 14.3% 95.9%;
+    --accent-foreground: 220.9 39.3% 11%;
+    --destructive: 360 84.2% 60.2%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 262.1 83.3% 57.8%;
+    --radius: 0.5rem;
+    --chart-1: ;
+    --chart-2: ;
+    --chart-3: ;
+    --chart-4: ;
+    --chart-5: ;
+  }
+
+  .dark {
+    --background: 224 71.4% 4.1%;
+    --foreground: 210 20% 98%;
+    --card: 224 71.4% 4.1%;
+    --card-foreground: 210 20% 98%;
+    --popover: 224 71.4% 4.1%;
+    --popover-foreground: 210 20% 98%;
+    --primary: 263.4 70% 50.4%;
+    --primary-foreground: 210 20% 98%;
+    --secondary: 215 27.9% 16.9%;
+    --secondary-foreground: 210 20% 98%;
+    --muted: 215 27.9% 16.9%;
+    --muted-foreground: 217.9 10.6% 64.9%;
+    --accent: 215 27.9% 16.9%;
+    --accent-foreground: 210 20% 98%;
+    --destructive: 360 84.2% 60.2%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 215 27.9% 16.9%;
+    --input: 215 27.9% 16.9%;
+    --ring: 263.4 70% 50.4%;
+    --chart-1: ;
+    --chart-2: ;
+    --chart-3: ;
+    --chart-4: ;
+    --chart-5: ;
+  }
+}
+
+*/
+
+/* Updated Playground page styles */
+
+@layer base {
+  html {
+    font-family: 'Inter', sans-serif;
+  }
+
+  body {
+    @apply !bg-background;
+  }
+}
+
+h2.section-header {
+  @apply text-foreground py-4 text-2xl font-normal;
+}
+
+h3.section-header {
+  @apply text-foreground py-3 text-xl;
+}
+
+.row {
+  @apply mb-6 flex flex-row flex-wrap rounded-md border py-10;
+}
+
+.example {
+  @apply flex-initial px-6;
+}
+
+.example2 {
+  @apply flex-initial px-4;
+}
+
+/* Additional CSS edits to components */
+
+/* Tooltip */
+
+.TooltipContent[data-side='bottom'] {
+  animation-name: slideDown;
+}
+
+/* Custom CSS to hide default number input arrows */
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  @apply appearance-none;
+}
+
+input[type='number'] {
+  -moz-appearance: textfield; /* For Firefox */
+}
+
+/* disabled class - used for icons and divs based on context */
+.ohif-disabled {
+  pointer-events: none;
+  cursor: not-allowed;
+  user-select: none;
+  opacity: 0.5;
+}
