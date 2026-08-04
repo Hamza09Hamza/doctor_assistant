@@ -22,6 +22,8 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/doctor-assistant-matplotlib-tests")
 
 from scripts.demo_totalsegmentator import (  # noqa: E402
+    ZENODO_FILENAME,
+    _ensure_archive,
     _extract_selected_ct,
     _render_preview,
     _select_preview_slice,
@@ -97,6 +99,67 @@ class TotalSegmentatorDemoTests(unittest.TestCase):
             )
             self.assertEqual(receipt["md5"], expected)
             self.assertEqual(receipt["size_bytes"], archive_path.stat().st_size)
+
+    def test_incomplete_archive_is_resumed_before_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            archive_path = cache / "dataset" / ZENODO_FILENAME
+            archive_path.parent.mkdir(parents=True)
+            archive_path.write_bytes(b"partial")
+
+            def finish_download(_url: str, destination: Path) -> None:
+                destination.write_bytes(b"x" * 20)
+
+            with (
+                patch(
+                    "scripts.demo_totalsegmentator._resolve_download_url",
+                    return_value=("https://example.invalid/archive", 20),
+                ),
+                patch(
+                    "scripts.demo_totalsegmentator._download_with_retries",
+                    side_effect=finish_download,
+                ) as download,
+                patch("scripts.demo_totalsegmentator._verify_archive") as verify,
+            ):
+                result = _ensure_archive(cache)
+
+            self.assertEqual(result, archive_path)
+            self.assertEqual(archive_path.stat().st_size, 20)
+            download.assert_called_once()
+            verify.assert_called_once_with(archive_path)
+
+    def test_bad_full_archive_is_quarantined_then_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            archive_path = cache / "dataset" / ZENODO_FILENAME
+            archive_path.parent.mkdir(parents=True)
+            archive_path.write_bytes(b"bad archive")
+            expected_size = archive_path.stat().st_size
+
+            def clean_download(_url: str, destination: Path) -> None:
+                destination.write_bytes(b"goodarchive")
+
+            with (
+                patch(
+                    "scripts.demo_totalsegmentator._resolve_download_url",
+                    return_value=("https://example.invalid/archive", expected_size),
+                ),
+                patch(
+                    "scripts.demo_totalsegmentator._download_with_retries",
+                    side_effect=clean_download,
+                ) as download,
+                patch(
+                    "scripts.demo_totalsegmentator._verify_archive",
+                    side_effect=[RuntimeError("bad md5"), None],
+                ) as verify,
+            ):
+                result = _ensure_archive(cache)
+
+            self.assertEqual(result, archive_path)
+            self.assertEqual(archive_path.read_bytes(), b"goodarchive")
+            self.assertEqual(len(list(archive_path.parent.glob("*.bad-md5-*"))), 1)
+            download.assert_called_once()
+            self.assertEqual(verify.call_count, 2)
 
 
 if __name__ == "__main__":

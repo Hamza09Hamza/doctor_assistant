@@ -159,27 +159,32 @@ def _resolve_download_url() -> tuple[str, int | None]:
     return str(url), int(size) if size is not None else None
 
 
+def _archive_receipt_is_valid(path: Path) -> bool:
+    receipt_path = path.with_suffix(path.suffix + ".verified.json")
+    if not path.exists() or not receipt_path.exists():
+        return False
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        receipt.get("md5") == ZENODO_MD5
+        and receipt.get("size_bytes") == path.stat().st_size
+    )
+
+
 def _verify_archive(path: Path) -> None:
     """Verify once, then reuse a size-bound receipt on later Colab sessions."""
     receipt_path = path.with_suffix(path.suffix + ".verified.json")
-    if receipt_path.exists():
-        try:
-            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            receipt = {}
-        if (
-            receipt.get("md5") == ZENODO_MD5
-            and receipt.get("size_bytes") == path.stat().st_size
-        ):
-            print(f"Archive verification receipt is valid: {path}")
-            return
+    if _archive_receipt_is_valid(path):
+        print(f"Archive verification receipt is valid: {path}")
+        return
 
     print("Verifying the published archive MD5 (one-time check) ...", flush=True)
     actual = _hash_file(path, "md5")
     if actual != ZENODO_MD5:
         raise RuntimeError(
-            f"Archive checksum mismatch for {path}: expected {ZENODO_MD5}, got {actual}. "
-            "The file was left in place for inspection; remove it before retrying."
+            f"Archive checksum mismatch for {path}: expected {ZENODO_MD5}, got {actual}."
         )
     receipt_path.write_text(
         json.dumps(
@@ -198,22 +203,73 @@ def _verify_archive(path: Path) -> None:
     )
 
 
+def _quarantine_archive(path: Path, reason: str) -> Path:
+    """Move a bad cache aside without deleting evidence or risking a broad path."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    destination = path.with_name(f"{path.name}.{reason}-{stamp}")
+    path.rename(destination)
+    receipt = path.with_suffix(path.suffix + ".verified.json")
+    if receipt.exists():
+        receipt.rename(destination.with_name(destination.name + ".verified.json"))
+    print(f"Quarantined unusable archive as: {destination}", flush=True)
+    return destination
+
+
 def _ensure_archive(cache_dir: Path) -> Path:
     dataset_dir = cache_dir / "dataset"
     archive_path = dataset_dir / ZENODO_FILENAME
-    if not archive_path.exists():
-        print("Resolving the official Zenodo download ...", flush=True)
-        url, expected_size = _resolve_download_url()
+
+    if _archive_receipt_is_valid(archive_path):
+        print(f"Reusing verified archive: {archive_path}")
+        return archive_path
+
+    print("Resolving the official Zenodo download ...", flush=True)
+    url, expected_size = _resolve_download_url()
+    if archive_path.exists() and expected_size is not None:
+        current_size = archive_path.stat().st_size
+        if current_size < expected_size:
+            print(
+                "Found an incomplete cached archive; resuming at "
+                f"{current_size / 1024 / 1024:.0f} of "
+                f"{expected_size / 1024 / 1024:.0f} MB ...",
+                flush=True,
+            )
+            _download_with_retries(url, archive_path)
+        elif current_size > expected_size:
+            print(
+                f"Cached archive is too large ({current_size} > {expected_size} bytes).",
+                flush=True,
+            )
+            _quarantine_archive(archive_path, "wrong-size")
+            print(f"Downloading a clean {ZENODO_FILENAME} ...", flush=True)
+            _download_with_retries(url, archive_path)
+        else:
+            print(f"Cached archive has the expected size: {archive_path}")
+    elif not archive_path.exists():
         print(f"Downloading {ZENODO_FILENAME} from Zenodo ...", flush=True)
+        _download_with_retries(url, archive_path)
+    else:
+        print(f"Checking existing unverified archive: {archive_path}")
+
+    if expected_size is not None and archive_path.stat().st_size != expected_size:
+        raise RuntimeError(
+            "Downloaded size mismatch after resume: "
+            f"expected {expected_size}, got {archive_path.stat().st_size}"
+        )
+
+    try:
+        _verify_archive(archive_path)
+    except RuntimeError as first_error:
+        print(str(first_error), flush=True)
+        _quarantine_archive(archive_path, "bad-md5")
+        print("Downloading one clean replacement after checksum failure ...", flush=True)
         _download_with_retries(url, archive_path)
         if expected_size is not None and archive_path.stat().st_size != expected_size:
             raise RuntimeError(
-                "Downloaded size mismatch: "
+                "Clean replacement size mismatch: "
                 f"expected {expected_size}, got {archive_path.stat().st_size}"
             )
-    else:
-        print(f"Reusing downloaded archive: {archive_path}")
-    _verify_archive(archive_path)
+        _verify_archive(archive_path)
     return archive_path
 
 
