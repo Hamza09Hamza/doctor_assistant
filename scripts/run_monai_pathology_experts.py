@@ -499,15 +499,28 @@ def run_brain_tumor(args) -> dict:
     }
 
 
+# LIDC-IDRI-0686's CT series (see scripts/run_lidc_lung_nodule_colab.py). Confirmed
+# CONTAMINATED, not merely suspected: this exact SeriesInstanceUID appears in the
+# "training" list of the MONAI/nnDetection-published dataset_fold0.json split
+# (https://github.com/Project-MONAI/MONAI-extra-test-data/releases/download/0.8.1/
+# LUNA16_datasplit-20220615T233840Z-001.zip), the identical split the bundle's model
+# card states it was trained and validated on. Its 9 recorded nodule boxes in that
+# split file are an exact coordinate match to LUNA16's public annotations.csv, ruling
+# out a UID collision. The model has literally seen this scan's ground truth in
+# training. No detection metric on this case can ever be reported as evidence -- a
+# different, split-disjoint LIDC case is required, not a workaround here.
+LUNG_NODULE_TEST_SERIES_UID = "1.3.6.1.4.1.14519.5.2.1.6279.6001.195557219224169985110295082004"
+
+
 def run_lung_nodule(args) -> dict:
     """Download and stage the LUNA16-trained nodule detector.
 
     Deliberately stops before claiming a detection metric: the pretrained checkpoint was
     trained *and* validated on LUNA16 fold 0, and the LIDC case this project has been
-    using (LIDC-IDRI-0686, series prefix 1.3.6.1.4.1.14519.5.2.1.6279.6001.* -- the
-    LUNA16 prefix) may well sit inside that fold. Running it and reporting a hit rate
-    before resolving that would be exactly the contamination mistake that disqualified
-    TorchXRayVision as an NIH comparator.
+    using (LIDC-IDRI-0686, LUNG_NODULE_TEST_SERIES_UID above) is confirmed -- not
+    suspected -- to be inside fold 0's training split. Running it and reporting a hit
+    rate would be exactly the contamination mistake that disqualified TorchXRayVision as
+    an NIH comparator, except worse: here it is proven, not merely unverifiable.
     """
     bundle_dir = download_bundle(LUNG_NODULE_BUNDLE, args.data_dir / "bundles")
 
@@ -519,9 +532,10 @@ def run_lung_nodule(args) -> dict:
     log(f"bundle    : {bundle_dir}")
     log(f"split files shipped with bundle: {[p.name for p in split_files] or 'none found'}")
     log(
-        "Not scoring yet: the checkpoint trained AND validated on LUNA16 fold 0, and the "
-        "project's LIDC test case carries the LUNA16 series prefix. Fold membership must "
-        "be resolved before any detection number means anything."
+        "CONFIRMED CONTAMINATED: LIDC-IDRI-0686's series UID is in dataset_fold0.json's "
+        "training list (verified against MONAI's own published LUNA16 fold split, exact "
+        "nodule-coordinate match against LUNA16 annotations.csv). This case can never be "
+        "scored against this checkpoint. A different, fold-disjoint LIDC case is required."
     )
 
     return {
@@ -531,11 +545,15 @@ def run_lung_nodule(args) -> dict:
         "status": "staged_pending_contamination_check",
         "bundle_dir": str(bundle_dir),
         "split_files_found": [p.name for p in split_files],
-        "contamination_status": "UNVERIFIED",
+        "contamination_status": "CONTAMINATED",
         "contamination_note": (
-            "Pretrained checkpoint was trained and validated on LUNA16 fold 0. "
-            "LIDC-IDRI-0686's series UID uses the LUNA16 prefix, so it may be in that "
-            "fold. Resolve fold membership before reporting any detection metric."
+            "Confirmed, not suspected: LIDC-IDRI-0686's SeriesInstanceUID "
+            f"({LUNG_NODULE_TEST_SERIES_UID}) appears in the 'training' list of the "
+            "MONAI-published dataset_fold0.json -- the exact split this checkpoint's "
+            "model card reports training and validating on -- with its 9 nodule boxes "
+            "matching LUNA16 annotations.csv coordinates exactly. This case's metrics "
+            "would be meaningless. A fold-disjoint LIDC case must replace it before this "
+            "detector can be scored at all."
         ),
     }
 
