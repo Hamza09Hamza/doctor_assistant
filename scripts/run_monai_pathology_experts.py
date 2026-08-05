@@ -630,9 +630,11 @@ def _load_lung_nodule_detector(bundle_dir: Path, device):
     """
     import torch
     from monai.apps.detection.networks.retinanet_detector import RetinaNetDetector
-    from monai.apps.detection.networks.retinanet_network import resnet_fpn_feature_extractor
+    from monai.apps.detection.networks.retinanet_network import (
+        RetinaNet,
+        resnet_fpn_feature_extractor,
+    )
     from monai.apps.detection.utils.anchor_utils import AnchorGeneratorWithAnchorShape
-    from monai.networks.nets import RetinaNet
     from monai.networks.nets.resnet import resnet50
 
     anchor_generator = AnchorGeneratorWithAnchorShape(
