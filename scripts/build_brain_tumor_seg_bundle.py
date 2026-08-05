@@ -57,15 +57,23 @@ from scripts.nifti_to_dicom import build_dicom_series  # noqa: E402
 SEGMENT_LABELS = ("Tumour core (TC)", "Whole tumour (WT)", "Enhancing tumour (ET)")
 
 
-def _build_prediction_seg(
+def _build_seg(
     mask_frames,
     source_datasets: list,
     output_path: Path,
+    *,
+    series_description: str,
+    series_number: int,
+    algorithm_type: str,
 ) -> None:
     """mask_frames: (n_frames, rows, cols, n_segments) bool array, frame order matching
     source_datasets order exactly (both indexed by the same k -- see
     scripts/nifti_to_dicom.py's docstring on why this must be identity-matched rather
-    than relying on any assumed spatial sort order)."""
+    than relying on any assumed spatial sort order).
+
+    algorithm_type: "AUTOMATIC" for the model's own prediction, "MANUAL" for the MSD/
+    BraTS expert-annotated ground truth -- highdicom requires AlgorithmIdentification
+    whenever it's not MANUAL (confirmed by it raising TypeError without one)."""
     import highdicom as hd
     from highdicom.seg.content import SegmentDescription
     from highdicom.sr.coding import CodedConcept
@@ -76,16 +84,16 @@ def _build_prediction_seg(
         i for i in range(mask_frames.shape[-1]) if mask_frames[..., i].any()
     ]
     if not present_segment_indices:
-        raise RuntimeError("prediction mask is empty on every channel; nothing to encode")
+        raise RuntimeError("mask is empty on every channel; nothing to encode")
 
-    # Required by the DICOM SEG IOD whenever algorithm_type != MANUAL (confirmed by
-    # highdicom raising TypeError without it, not assumed up front).
-    algorithm_identification = AlgorithmIdentificationSequence(
-        name="brats_mri_segmentation",
-        family=CodedConcept("113092", "DCM", "Deep Learning"),
-        version="MONAI Model Zoo",
-        source="doctor_assistant / scripts/run_monai_pathology_experts.py",
-    )
+    algorithm_identification = None
+    if algorithm_type != "MANUAL":
+        algorithm_identification = AlgorithmIdentificationSequence(
+            name="brats_mri_segmentation",
+            family=CodedConcept("113092", "DCM", "Deep Learning"),
+            version="MONAI Model Zoo",
+            source="doctor_assistant / scripts/run_monai_pathology_experts.py",
+        )
 
     kept_mask = mask_frames[..., present_segment_indices]
     segment_descriptions = [
@@ -94,7 +102,7 @@ def _build_prediction_seg(
             segment_label=SEGMENT_LABELS[channel_index],
             segmented_property_category=CodedConcept("91723000", "SCT", "Anatomical Structure"),
             segmented_property_type=CodedConcept("108369006", "SCT", "Neoplasm"),
-            algorithm_type="AUTOMATIC",
+            algorithm_type=algorithm_type,
             algorithm_identification=algorithm_identification,
         )
         for position, channel_index in enumerate(present_segment_indices)
@@ -106,10 +114,10 @@ def _build_prediction_seg(
         segmentation_type=hd.seg.SegmentationTypeValues.BINARY,
         segment_descriptions=segment_descriptions,
         series_instance_uid=generate_uid(),
-        series_number=10,
+        series_number=series_number,
         sop_instance_uid=generate_uid(),
         instance_number=1,
-        series_description="AI prediction (brats_mri_segmentation) -- SYNTHETIC DICOM demo",
+        series_description=series_description,
         manufacturer="doctor_assistant",
         manufacturer_model_name="brats_mri_segmentation (MONAI Model Zoo)",
         software_versions="run_monai_pathology_experts.py",
@@ -217,7 +225,27 @@ def run(args) -> Path:
 
     seg_path = work_dir / "totalsegmentator_seg.dcm"
     log("Building AI-prediction DICOM SEG (TC/WT/ET) ...")
-    _build_prediction_seg(mask_frames, source_datasets, seg_path)
+    _build_seg(
+        mask_frames, source_datasets, seg_path,
+        series_description="AI prediction (brats_mri_segmentation) -- SYNTHETIC DICOM demo",
+        series_number=10, algorithm_type="AUTOMATIC",
+    )
+
+    # Ground truth: case["label"] went through the identical ConvertToMultiChannelBased
+    # OnBratsClassesd transform as the prediction, so it's already the same (3, i, j, k)
+    # TC/WT/ET channel layout -- no extra inference, just the dataset's own expert
+    # annotation (MSD/BraTS ships expert-segmented labels, not raw contours).
+    ground_truth = case["label"].cpu().numpy().astype(bool)  # (3, i, j, k)
+    gt_mask_frames = np.transpose(ground_truth, (3, 1, 2, 0))
+    expert_dir = work_dir / "expert_reference"
+    expert_dir.mkdir(parents=True, exist_ok=True)
+    gt_seg_path = expert_dir / "ground_truth_seg.dcm"
+    log("Building ground-truth DICOM SEG (TC/WT/ET, MSD/BraTS expert annotation) ...")
+    _build_seg(
+        gt_mask_frames, source_datasets, gt_seg_path,
+        series_description="Ground truth (MSD Task01_BrainTumour / BraTS expert annotation)",
+        series_number=11, algorithm_type="MANUAL",
+    )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = args.output_dir / f"brain_tumor_case{args.case_index:03d}_ohif_bundle.zip"
@@ -225,6 +253,7 @@ def run(args) -> Path:
         for dcm_path in dicom_dir.glob("*.dcm"):
             archive.write(dcm_path, f"source_dicom/{dcm_path.name}")
         archive.write(seg_path, "totalsegmentator_seg.dcm")
+        archive.write(gt_seg_path, f"expert_reference/{gt_seg_path.name}")
 
     log(f"Bundle written: {bundle_path}")
     log(

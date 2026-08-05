@@ -120,9 +120,31 @@ def build_dicom_series(
     # low-contrast even though nothing is clipped. This only affects the DEFAULT window
     # tag (an explicit window_center/window_width argument still wins); RescaleSlope/
     # Intercept/scale above still cover the full min/max losslessly.
+    #
+    # Background exclusion: MONAI's NormalizeIntensityd only z-scores the nonzero
+    # (foreground) voxels, leaving background at its own near-constant value (not
+    # exactly 0.0 due to float rounding -- observed ~-0.000365 on a real MSD case). The
+    # background constant is by far the most common value in the volume (it's
+    # everything outside the head), so if it isn't excluded here it dominates the
+    # percentile calculation and can land INSIDE the resulting window instead of below
+    # it -- background then renders mid-gray instead of black. Detected as the modal
+    # value (most frequent, within float tolerance) and forced below the window floor.
     if finite.size:
-        p_lo, p_hi = np.percentile(finite, [1.0, 99.0])
+        values, counts = np.unique(np.round(finite, 6), return_counts=True)
+        background_value = float(values[np.argmax(counts)])
+        foreground = finite[np.abs(finite - background_value) > 1e-5]
+        percentile_source = foreground if foreground.size else finite
+        p_lo, p_hi = np.percentile(percentile_source, [1.0, 99.0])
         p_lo, p_hi = float(p_lo), float(p_hi)
+        # Guarantee the background constant sits strictly below the window's low edge
+        # (with a small margin) so it always displays as pure black. p_lo from the
+        # foreground-only percentile above is *usually* already below the background
+        # constant (foreground was z-scored around a different mean/std than the
+        # background sits at) -- only raise p_lo if background would otherwise fall
+        # inside or above the window; never lower an already-correct p_lo.
+        margin = max((p_hi - p_lo) * 0.02, 1e-6)
+        if background_value >= p_lo:
+            p_lo = background_value + margin
     else:
         p_lo, p_hi = data_min, data_max
     if p_hi <= p_lo:

@@ -28,7 +28,7 @@ import pydicom
 from scripts.nifti_to_dicom import build_dicom_series
 
 if HIGHDICOM_AVAILABLE:
-    from scripts.build_brain_tumor_seg_bundle import _build_prediction_seg
+    from scripts.build_brain_tumor_seg_bundle import _build_seg
 
 
 @unittest.skipUnless(HIGHDICOM_AVAILABLE, "highdicom not installed in this environment")
@@ -55,7 +55,10 @@ class BuildPredictionSegTests(unittest.TestCase):
             mask_frames = np.transpose(mask, (3, 1, 2, 0))
 
             seg_path = tmp_path / "seg.dcm"
-            _build_prediction_seg(mask_frames, source_datasets, seg_path)
+            _build_seg(
+                mask_frames, source_datasets, seg_path,
+                series_description="test", series_number=10, algorithm_type="AUTOMATIC",
+            )
 
             seg = pydicom.dcmread(str(seg_path), force=True)
             labels = {str(s.SegmentLabel) for s in seg.SegmentSequence}
@@ -76,7 +79,10 @@ class BuildPredictionSegTests(unittest.TestCase):
             mask_frames = np.transpose(mask, (3, 1, 2, 0))
 
             seg_path = tmp_path / "seg.dcm"
-            _build_prediction_seg(mask_frames, source_datasets, seg_path)
+            _build_seg(
+                mask_frames, source_datasets, seg_path,
+                series_description="test", series_number=10, algorithm_type="AUTOMATIC",
+            )
 
             seg = pydicom.dcmread(str(seg_path), force=True)
             self.assertEqual(str(seg.SOPClassUID), "1.2.840.10008.5.1.4.1.1.66.4")
@@ -95,7 +101,10 @@ class BuildPredictionSegTests(unittest.TestCase):
             mask_frames = np.zeros((self.nk, self.ni, self.nj, 3), dtype=bool)
             seg_path = tmp_path / "seg.dcm"
             with self.assertRaises(RuntimeError):
-                _build_prediction_seg(mask_frames, source_datasets, seg_path)
+                _build_seg(
+                    mask_frames, source_datasets, seg_path,
+                    series_description="test", series_number=10, algorithm_type="AUTOMATIC",
+                )
 
 
 if __name__ == "__main__":
