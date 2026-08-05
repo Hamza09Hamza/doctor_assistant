@@ -9,15 +9,23 @@ Turns the existing n=1 near-miss result into a real small-sample sensitivity num
 pipeline in run_monai_pathology_experts.py and lidc_seg_ground_truth.py unchanged --
 this script only adds candidate discovery and orchestration across many cases.
 
-GPU usage note: downloads (I/O-bound, ~1 CT + 4 SEG files per case) are parallelized
-with a thread pool; GPU inference is deliberately run one case at a time, AFTER all
-data is staged, not interleaved with it. A single Colab GPU has nothing to gain from
-running multiple full 3D sliding-window detector passes concurrently -- that's real
-risk of an OOM crash for no measurable speedup, since inference is already
-compute-bound once it starts. The actual lever for keeping the GPU continuously busy
-is eliminating the download-wait between cases, which staging everything first does;
-the detector itself is loaded once and reused across every case rather than reloaded
-per case.
+GPU usage note: GPU inference is deliberately run one case at a time, AFTER all data
+is staged, not interleaved with downloading. A single Colab GPU has nothing to gain
+from running multiple full 3D sliding-window detector passes concurrently -- that's
+real risk of an OOM crash for no measurable speedup, since inference is already
+compute-bound once it starts. The detector itself is loaded once and reused across
+every case rather than reloaded per case.
+
+--download-workers default is 1 (sequential), not parallel: --download-workers > 1
+was tried and reverted after repeatedly stalling in real Colab runs with zero visible
+progress for minutes at a time, even after removing the two most likely causes (a
+freshly-constructed IDCClient() per call, then concurrent tqdm progress-bar
+rendering). The remaining suspect is idc-index's underlying s5cmd subprocess call
+itself under concurrent invocation, which isn't something this project can fix or has
+verified is actually safe -- so this defaults to the one approach proven reliable
+every time this session: strictly sequential downloads (about 30-60s/case). Pass
+--download-workers > 1 only if you want to re-attempt parallel downloads yourself;
+it is not the default because it has not been made to work reliably here.
 
 Usage (Colab, after run_monai_pathology_experts.py has already downloaded the
 lung_nodule_ct_detection bundle at least once):
@@ -26,7 +34,7 @@ lung_nodule_ct_detection bundle at least once):
         --data-dir /content/drive/MyDrive/doctor_assistant/monai_experts/data \
         --scratch-dir /content/monai_scratch \
         --output-dir /content/drive/MyDrive/doctor_assistant/monai_experts/results \
-        --max-cases 27 --download-workers 6
+        --max-cases 27
 """
 
 from __future__ import annotations
@@ -203,7 +211,8 @@ def run_batch(args) -> dict:
         candidates = candidates[: args.max_cases]
     log(f"Running batch on {len(candidates)} case(s).")
 
-    log(f"Staging {len(candidates)} case(s) with {args.download_workers} parallel download workers ...")
+    mode = "sequentially (1 worker)" if args.download_workers <= 1 else f"with {args.download_workers} parallel download workers"
+    log(f"Staging {len(candidates)} case(s) {mode} ...")
     staged = []
     failed_staging = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.download_workers) as pool:
@@ -325,7 +334,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scratch-dir", type=Path, default=Path("/content/monai_scratch"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-cases", type=int, default=None)
-    parser.add_argument("--download-workers", type=int, default=6)
+    parser.add_argument("--download-workers", type=int, default=1)
     return parser
 
 
