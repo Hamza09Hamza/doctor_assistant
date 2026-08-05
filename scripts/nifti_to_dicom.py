@@ -113,6 +113,21 @@ def build_dicom_series(
     data_max = float(finite.max()) if finite.size else 1.0
     scale = 4095.0 / (data_max - data_min) if data_max > data_min else 1.0
 
+    # Default window from robust percentiles, not literal min/max: a handful of outlier
+    # voxels (background noise, a bright artifact) can stretch data_min/data_max far
+    # beyond where the real tissue actually clusters, so windowing to the *full* range
+    # squeezes real anatomy into a narrow sliver of display values -- looks washed-out/
+    # low-contrast even though nothing is clipped. This only affects the DEFAULT window
+    # tag (an explicit window_center/window_width argument still wins); RescaleSlope/
+    # Intercept/scale above still cover the full min/max losslessly.
+    if finite.size:
+        p_lo, p_hi = np.percentile(finite, [1.0, 99.0])
+        p_lo, p_hi = float(p_lo), float(p_hi)
+    else:
+        p_lo, p_hi = data_min, data_max
+    if p_hi <= p_lo:
+        p_lo, p_hi = data_min, data_max
+
     study_instance_uid = study_instance_uid or generate_uid()
     series_instance_uid = series_instance_uid or generate_uid()
     frame_of_reference_uid = frame_of_reference_uid or generate_uid()
@@ -167,11 +182,13 @@ def build_dicom_series(
         ds.RescaleIntercept = data_min
         # WindowCenter/WindowWidth apply AFTER the Modality LUT (RescaleSlope/Intercept),
         # i.e. in real-world units -- NOT the 0-4095 stored-pixel space. Default to the
-        # real data's own min/max (e.g. z-scored MSD intensities are roughly -3..+5, not
-        # 0..4095); hardcoding 2048/4095 here previously clipped nearly all real values
-        # below the window's low edge, rendering as a blank/black viewport.
-        wc = window_center if window_center is not None else (data_min + data_max) / 2.0
-        ww = window_width if window_width is not None else max(data_max - data_min, 1e-6)
+        # 1st/99th-percentile range computed above, not literal min/max (hardcoding
+        # 2048/4095 here previously clipped nearly all real values below the window's
+        # low edge -> blank viewport; using literal min/max instead fixed that but
+        # looked washed-out/low-contrast, since a few outlier voxels stretch min/max
+        # far past where real tissue actually sits).
+        wc = window_center if window_center is not None else (p_lo + p_hi) / 2.0
+        ww = window_width if window_width is not None else max(p_hi - p_lo, 1e-6)
         ds.WindowCenter = wc
         ds.WindowWidth = ww
         ds.PixelData = scaled.tobytes()
