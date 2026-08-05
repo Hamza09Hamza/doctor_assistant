@@ -34,7 +34,7 @@ def clinique_amina_url(base_url: str, study_instance_uid: str) -> str:
     return f"{base}/doctor-assistant/orthancProxy?StudyInstanceUIDs={uid}"
 
 
-def _resolve_bundle(bundle: Path, destination: Path) -> tuple[Path, Path]:
+def _resolve_bundle(bundle: Path, destination: Path) -> tuple[Path, Path, list[Path]]:
     if not bundle.is_file() or not zipfile.is_zipfile(bundle):
         raise ValueError(f"viewer bundle is not a readable ZIP: {bundle}")
     _safe_extract_zip(bundle, destination)
@@ -44,7 +44,9 @@ def _resolve_bundle(bundle: Path, destination: Path) -> tuple[Path, Path]:
         raise RuntimeError(
             "viewer bundle must contain source_dicom/ and totalsegmentator_seg.dcm"
         )
-    return source_dir, seg_path
+    expert_dir = destination / "expert_reference"
+    expert_seg_paths = sorted(expert_dir.rglob("*.dcm")) if expert_dir.is_dir() else []
+    return source_dir, seg_path, expert_seg_paths
 
 
 def upload_dicom_files(client: httpx.Client, files: list[Path]) -> tuple[int, int]:
@@ -79,6 +81,29 @@ def verify_study_visible(client: httpx.Client, study_instance_uid: str) -> None:
         raise RuntimeError("Orthanc accepted the objects but QIDO-RS cannot see the study")
 
 
+def verify_series_visible(
+    client: httpx.Client,
+    study_instance_uid: str,
+    required_series_instance_uids: set[str],
+) -> None:
+    response = client.get(
+        f"/dicom-web/studies/{quote(study_instance_uid, safe='.')}/series",
+        headers={"Accept": "application/dicom+json"},
+    )
+    response.raise_for_status()
+    visible_uids = {
+        str(item.get("0020000E", {}).get("Value", [""])[0])
+        for item in response.json()
+        if item.get("0020000E", {}).get("Value")
+    }
+    missing = required_series_instance_uids - visible_uids
+    if missing:
+        raise RuntimeError(
+            "Orthanc accepted the objects but QIDO-RS cannot see required SEG series: "
+            + ", ".join(sorted(missing))
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
@@ -106,15 +131,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     with tempfile.TemporaryDirectory(prefix="ohif_bundle_") as tmp:
-        source_dir, seg_path = _resolve_bundle(args.bundle, Path(tmp))
-        series = discover_ct_series(source_dir)
+        source_dir, seg_path, expert_seg_paths = _resolve_bundle(args.bundle, Path(tmp))
+        series = discover_ct_series(source_dir, modalities=frozenset({"CT", "MR"}))
         selected = select_ct_series(series, None)
-        validation = validate_dicom_seg(seg_path, selected)
-        dicom_files = list(selected.files) + [seg_path]
+        seg_paths = [seg_path, *expert_seg_paths]
+        validations = [validate_dicom_seg(path, selected) for path in seg_paths]
+        dicom_files = list(selected.files) + seg_paths
 
         print(
             f"Bundle verified: {selected.instance_count} CT instances, "
-            f"{validation.segment_count} non-empty anatomical segments.",
+            f"{validations[0].segment_count} AI segments, "
+            f"{len(expert_seg_paths)} expert SEG object(s).",
             flush=True,
         )
         viewer_url = clinique_amina_url(args.ohif_url, selected.study_instance_uid)
@@ -132,6 +159,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Uploading {len(dicom_files)} DICOM objects to Orthanc ...", flush=True)
                 uploaded, already_stored = upload_dicom_files(client, dicom_files)
                 verify_study_visible(client, selected.study_instance_uid)
+                verify_series_visible(
+                    client,
+                    selected.study_instance_uid,
+                    {validation.series_instance_uid for validation in validations},
+                )
         except httpx.ConnectError as exc:
             raise RuntimeError(
                 f"cannot connect to Orthanc at {args.orthanc_url}; start the Docker services first"

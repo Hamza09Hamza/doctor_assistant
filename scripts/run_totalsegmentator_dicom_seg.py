@@ -94,8 +94,11 @@ def _materialize_input(source: Path, destination: Path) -> Path:
     return destination
 
 
-def discover_ct_series(root: Path) -> list[DicomSeries]:
-    """Return CT series without reading pixel data or printing identifying tags."""
+def discover_ct_series(root: Path, modalities: frozenset[str] = frozenset({"CT"})) -> list[DicomSeries]:
+    """Return DICOM series matching `modalities` without reading pixel data or printing
+    identifying tags. Defaults to CT only (this module's original, still-only use case);
+    scripts/publish_dicom_seg_to_orthanc.py passes {"CT", "MR"} so it can also publish
+    the synthetic-MRI brain-tumour bundle built by build_brain_tumor_seg_bundle.py."""
     pydicom = _require_pydicom()
     tags = [
         "Modality",
@@ -117,7 +120,7 @@ def discover_ct_series(root: Path) -> list[DicomSeries]:
             )
         except Exception:
             continue
-        if str(getattr(dataset, "Modality", "")).upper() != "CT":
+        if str(getattr(dataset, "Modality", "")).upper() not in modalities:
             continue
         study_uid = str(getattr(dataset, "StudyInstanceUID", ""))
         series_uid = str(getattr(dataset, "SeriesInstanceUID", ""))

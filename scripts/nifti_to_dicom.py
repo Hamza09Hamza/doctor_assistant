@@ -165,8 +165,13 @@ def build_dicom_series(
         ds.PixelRepresentation = 0
         ds.RescaleSlope = (data_max - data_min) / 4095.0 if data_max > data_min else 1.0
         ds.RescaleIntercept = data_min
-        wc = window_center if window_center is not None else 2048
-        ww = window_width if window_width is not None else 4095
+        # WindowCenter/WindowWidth apply AFTER the Modality LUT (RescaleSlope/Intercept),
+        # i.e. in real-world units -- NOT the 0-4095 stored-pixel space. Default to the
+        # real data's own min/max (e.g. z-scored MSD intensities are roughly -3..+5, not
+        # 0..4095); hardcoding 2048/4095 here previously clipped nearly all real values
+        # below the window's low edge, rendering as a blank/black viewport.
+        wc = window_center if window_center is not None else (data_min + data_max) / 2.0
+        ww = window_width if window_width is not None else max(data_max - data_min, 1e-6)
         ds.WindowCenter = wc
         ds.WindowWidth = ww
         ds.PixelData = scaled.tobytes()
