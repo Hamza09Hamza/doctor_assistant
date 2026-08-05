@@ -26,30 +26,36 @@ if PANDAS_AVAILABLE:
 @unittest.skipUnless(PANDAS_AVAILABLE, "pandas not installed in this environment")
 class FilterCleanCandidatesTests(unittest.TestCase):
     def _index(self, rows):
-        return pd.DataFrame(rows, columns=["PatientID", "SeriesInstanceUID", "Modality"])
+        """rows: (PatientID, SeriesInstanceUID, Modality, instanceCount)."""
+        return pd.DataFrame(
+            rows, columns=["PatientID", "SeriesInstanceUID", "Modality", "instanceCount"]
+        )
 
     def test_accepts_case_matching_verified_shape(self):
-        """One CT series + exactly 4 SEG series, CT not in LUNA16 -- must be kept."""
+        """One CT series + exactly 4 SEG series, CT not in LUNA16 -- must be kept, and
+        the CT's own instanceCount carried through (used later to detect a partial/
+        interrupted download instead of just checking "folder is non-empty")."""
         rows = [
-            ("P1", "CT-1", "CT"),
-            ("P1", "SEG-1", "SEG"),
-            ("P1", "SEG-2", "SEG"),
-            ("P1", "SEG-3", "SEG"),
-            ("P1", "SEG-4", "SEG"),
+            ("P1", "CT-1", "CT", 113),
+            ("P1", "SEG-1", "SEG", 1),
+            ("P1", "SEG-2", "SEG", 1),
+            ("P1", "SEG-3", "SEG", 1),
+            ("P1", "SEG-4", "SEG", 1),
         ]
         candidates = filter_clean_candidates(self._index(rows), luna_series=set())
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["patient_id"], "P1")
         self.assertEqual(candidates[0]["ct_series_uid"], "CT-1")
+        self.assertEqual(candidates[0]["ct_instance_count"], 113)
         self.assertEqual(set(candidates[0]["seg_series_uids"]), {"SEG-1", "SEG-2", "SEG-3", "SEG-4"})
 
     def test_rejects_case_in_luna16(self):
         rows = [
-            ("P1", "CT-1", "CT"),
-            ("P1", "SEG-1", "SEG"),
-            ("P1", "SEG-2", "SEG"),
-            ("P1", "SEG-3", "SEG"),
-            ("P1", "SEG-4", "SEG"),
+            ("P1", "CT-1", "CT", 113),
+            ("P1", "SEG-1", "SEG", 1),
+            ("P1", "SEG-2", "SEG", 1),
+            ("P1", "SEG-3", "SEG", 1),
+            ("P1", "SEG-4", "SEG", 1),
         ]
         candidates = filter_clean_candidates(self._index(rows), luna_series={"CT-1"})
         self.assertEqual(candidates, [])
@@ -58,13 +64,13 @@ class FilterCleanCandidatesTests(unittest.TestCase):
         """Fewer or more than 4 SEG series -- e.g. per-nodule rather than per-patient
         SEGs -- is a different case shape, out of scope for this batch, not an error."""
         too_few = self._index(
-            [("P1", "CT-1", "CT"), ("P1", "SEG-1", "SEG"), ("P1", "SEG-2", "SEG")]
+            [("P1", "CT-1", "CT", 113), ("P1", "SEG-1", "SEG", 1), ("P1", "SEG-2", "SEG", 1)]
         )
         self.assertEqual(filter_clean_candidates(too_few, luna_series=set()), [])
 
         too_many = self._index(
-            [("P1", "CT-1", "CT")]
-            + [(f"P1", f"SEG-{i}", "SEG") for i in range(6)]
+            [("P1", "CT-1", "CT", 113)]
+            + [("P1", f"SEG-{i}", "SEG", 1) for i in range(6)]
         )
         self.assertEqual(filter_clean_candidates(too_many, luna_series=set()), [])
 
@@ -72,28 +78,28 @@ class FilterCleanCandidatesTests(unittest.TestCase):
         """A patient with more than one CT series doesn't match the single-series
         assumption the rest of the pipeline (_ct_dicom_to_nifti etc.) makes."""
         rows = [
-            ("P1", "CT-1", "CT"),
-            ("P1", "CT-2", "CT"),
-            ("P1", "SEG-1", "SEG"),
-            ("P1", "SEG-2", "SEG"),
-            ("P1", "SEG-3", "SEG"),
-            ("P1", "SEG-4", "SEG"),
+            ("P1", "CT-1", "CT", 113),
+            ("P1", "CT-2", "CT", 90),
+            ("P1", "SEG-1", "SEG", 1),
+            ("P1", "SEG-2", "SEG", 1),
+            ("P1", "SEG-3", "SEG", 1),
+            ("P1", "SEG-4", "SEG", 1),
         ]
         candidates = filter_clean_candidates(self._index(rows), luna_series=set())
         self.assertEqual(candidates, [])
 
     def test_multiple_patients_independent(self):
         rows = [
-            ("P1", "CT-1", "CT"),
-            ("P1", "SEG-1", "SEG"),
-            ("P1", "SEG-2", "SEG"),
-            ("P1", "SEG-3", "SEG"),
-            ("P1", "SEG-4", "SEG"),
-            ("P2", "CT-2", "CT"),
-            ("P2", "SEG-5", "SEG"),
-            ("P2", "SEG-6", "SEG"),
-            ("P2", "SEG-7", "SEG"),
-            ("P2", "SEG-8", "SEG"),
+            ("P1", "CT-1", "CT", 113),
+            ("P1", "SEG-1", "SEG", 1),
+            ("P1", "SEG-2", "SEG", 1),
+            ("P1", "SEG-3", "SEG", 1),
+            ("P1", "SEG-4", "SEG", 1),
+            ("P2", "CT-2", "CT", 90),
+            ("P2", "SEG-5", "SEG", 1),
+            ("P2", "SEG-6", "SEG", 1),
+            ("P2", "SEG-7", "SEG", 1),
+            ("P2", "SEG-8", "SEG", 1),
         ]
         candidates = filter_clean_candidates(self._index(rows), luna_series={"CT-2"})
         self.assertEqual(len(candidates), 1)

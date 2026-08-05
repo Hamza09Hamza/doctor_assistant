@@ -110,6 +110,11 @@ def filter_clean_candidates(lidc_index, luna_series: set[str]) -> list[dict]:
 
     ct = lidc_index[lidc_index["Modality"] == "CT"]
     ct_by_patient = ct.groupby("PatientID")["SeriesInstanceUID"].apply(list)
+    # instanceCount: IDC's own recorded file count per series -- used later (_stage_case)
+    # to tell a fully-downloaded case apart from one left partial by an interrupted
+    # download (e.g. a dropped network connection), rather than just checking
+    # "folder is non-empty."
+    ct_instance_count = ct.set_index("SeriesInstanceUID")["instanceCount"]
 
     candidates = []
     for patient_id in sorted(four_seg_patients):
@@ -123,6 +128,7 @@ def filter_clean_candidates(lidc_index, luna_series: set[str]) -> list[dict]:
             {
                 "patient_id": patient_id,
                 "ct_series_uid": ct_uid,
+                "ct_instance_count": int(ct_instance_count[ct_uid]),
                 "seg_series_uids": list(seg_by_patient[patient_id]),
             }
         )
@@ -174,14 +180,22 @@ def _stage_case(candidate: dict, scratch_dir: Path, client) -> dict:
     experts._idc_download(), which would construct a new, expensive-to-build client
     per call."""
     patient_id = candidate["patient_id"]
+    expected_ct_count = candidate["ct_instance_count"]
     case_dir = scratch_dir / "lidc_batch" / patient_id
     ct_dir = case_dir / "ct"
     ct_files = _find_dicom_files(ct_dir) if ct_dir.exists() else []
-    if not ct_files:
+    # Compare against IDC's own recorded instanceCount, not just "folder is non-empty":
+    # a folder left behind by an interrupted download (dropped network connection mid-
+    # transfer) is non-empty but incomplete, and would otherwise be silently treated as
+    # already-staged -- producing a case with missing CT slices instead of a clear error.
+    if len(ct_files) != expected_ct_count:
         _client_download(client, candidate["ct_series_uid"], ct_dir)
         ct_files = _find_dicom_files(ct_dir)
-    if not ct_files:
-        raise RuntimeError(f"{patient_id}: CT download produced no readable DICOM files")
+    if len(ct_files) != expected_ct_count:
+        raise RuntimeError(
+            f"{patient_id}: expected {expected_ct_count} CT files, found {len(ct_files)} "
+            "after download -- possible incomplete/corrupt transfer"
+        )
     log(f"  {patient_id}: CT done ({len(ct_files)} files)")
 
     seg_paths = []
