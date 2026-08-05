@@ -48,7 +48,6 @@ from scripts.run_monai_pathology_experts import (  # noqa: E402
     LUNG_NODULE_SCORE_THRESHOLD,
     _ct_dicom_to_nifti,
     _find_dicom_files,
-    _idc_download,
     _load_lung_nodule_detector,
     _match_detections,
     _run_lung_nodule_detector,
@@ -122,10 +121,23 @@ def filter_clean_candidates(lidc_index, luna_series: set[str]) -> list[dict]:
     return candidates
 
 
-def discover_clean_candidates(cache_dir: Path) -> list[dict]:
+def get_idc_client():
+    """One shared IDCClient, built once. IDCClient.__init__ parses IDC's full index
+    (a large parquet file, twice -- current + prior versions) from scratch on every
+    construction; scripts/run_monai_pathology_experts.py's _idc_download() calls
+    IDCClient() fresh per download, which is fine for the single-case flow (one call,
+    ever) but pathological here -- constructing 6 of them concurrently in the download
+    thread pool means 6 threads all redoing that same expensive parse under the GIL
+    before any of them even starts the actual network transfer. download_dicom_series()
+    only reads self.index (no writes to shared state) for a plain series download, so
+    reusing one client instance across threads is safe."""
     from idc_index import IDCClient
 
-    client = IDCClient()
+    return IDCClient()
+
+
+def discover_clean_candidates(cache_dir: Path, client=None) -> list[dict]:
+    client = client or get_idc_client()
     lidc = client.index[client.index["collection_id"] == "lidc_idri"]
     luna_series = _luna16_series_uids(cache_dir)
     candidates = filter_clean_candidates(lidc, luna_series)
@@ -133,14 +145,24 @@ def discover_clean_candidates(cache_dir: Path) -> list[dict]:
     return candidates
 
 
-def _stage_case(candidate: dict, scratch_dir: Path) -> dict:
+def _client_download(client, series_uid: str, destination: Path) -> None:
+    log(f"Downloading IDC series {series_uid} ...")
+    client.download_dicom_series(
+        series_uid, str(destination), quiet=False, show_progress_bar=True
+    )
+
+
+def _stage_case(candidate: dict, scratch_dir: Path, client) -> dict:
     """Download one case's CT + 4 reader SEGs. Runs inside a thread pool -- I/O-bound
-    (network download via idc-index), safe to parallelize unlike GPU inference."""
+    (network download via idc-index), safe to parallelize unlike GPU inference. Uses the
+    shared client passed in (see get_idc_client()) rather than run_monai_pathology_
+    experts._idc_download(), which would construct a new, expensive-to-build client
+    per call."""
     case_dir = scratch_dir / "lidc_batch" / candidate["patient_id"]
     ct_dir = case_dir / "ct"
     ct_files = _find_dicom_files(ct_dir) if ct_dir.exists() else []
     if not ct_files:
-        _idc_download(candidate["ct_series_uid"], ct_dir)
+        _client_download(client, candidate["ct_series_uid"], ct_dir)
         ct_files = _find_dicom_files(ct_dir)
     if not ct_files:
         raise RuntimeError(f"{candidate['patient_id']}: CT download produced no readable DICOM files")
@@ -150,7 +172,7 @@ def _stage_case(candidate: dict, scratch_dir: Path) -> dict:
         seg_dir = case_dir / "seg" / f"reader_{i}"
         found = _find_dicom_files(seg_dir) if seg_dir.exists() else []
         if len(found) != 1:
-            _idc_download(seg_uid, seg_dir)
+            _client_download(client, seg_uid, seg_dir)
             found = _find_dicom_files(seg_dir)
         if len(found) != 1:
             raise RuntimeError(
@@ -165,8 +187,9 @@ def _stage_case(candidate: dict, scratch_dir: Path) -> dict:
 def run_batch(args) -> dict:
     import torch
 
+    idc_client = get_idc_client()
     cache_dir = args.data_dir / "lidc_batch_cache"
-    candidates = discover_clean_candidates(cache_dir)
+    candidates = discover_clean_candidates(cache_dir, client=idc_client)
     if args.max_cases is not None:
         candidates = candidates[: args.max_cases]
     log(f"Running batch on {len(candidates)} case(s).")
@@ -175,7 +198,7 @@ def run_batch(args) -> dict:
     staged = []
     failed_staging = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.download_workers) as pool:
-        futures = {pool.submit(_stage_case, c, args.scratch_dir): c for c in candidates}
+        futures = {pool.submit(_stage_case, c, args.scratch_dir, idc_client): c for c in candidates}
         for future in concurrent.futures.as_completed(futures):
             candidate = futures[future]
             try:
