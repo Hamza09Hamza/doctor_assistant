@@ -896,11 +896,28 @@ def main(argv: list[str] | None = None) -> int:
     args.scratch_dir.mkdir(parents=True, exist_ok=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    results = []
+    # Load any prior run's results first, keyed by expert name, so re-running one
+    # expert (e.g. after a crash) never silently drops an already-good result for the
+    # other expert -- each expert can take minutes, and a later expert failing should
+    # not force redoing earlier work that already succeeded.
+    out = args.output_dir / "monai_experts_manifest.json"
+    results_by_expert: dict[str, dict] = {}
+    if out.is_file():
+        try:
+            previous = json.loads(out.read_text())
+            for entry in previous.get("results", []):
+                results_by_expert[entry["expert"]] = entry
+        except (json.JSONDecodeError, KeyError) as exc:
+            log(f"Could not read previous manifest ({exc}); starting fresh.")
+
     if args.expert in ("brain_tumor", "both"):
-        results.append(run_brain_tumor(args))
+        results_by_expert["brain_tumor"] = run_brain_tumor(args)
     if args.expert in ("lung_nodule", "both"):
-        results.append(run_lung_nodule(args))
+        results_by_expert["lung_nodule"] = run_lung_nodule(args)
+
+    # Preserve a stable, readable order regardless of which expert ran this time.
+    order = ("brain_tumor", "lung_nodule")
+    results = [results_by_expert[name] for name in order if name in results_by_expert]
 
     manifest = {
         "workflow": "monai_pathology_experts",
@@ -911,7 +928,6 @@ def main(argv: list[str] | None = None) -> int:
             "and not a medical device."
         ),
     }
-    out = args.output_dir / "monai_experts_manifest.json"
     out.write_text(json.dumps(manifest, indent=2))
     log("")
     log(f"Manifest written: {out}")
