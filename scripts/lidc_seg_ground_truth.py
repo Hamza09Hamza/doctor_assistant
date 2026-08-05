@@ -75,8 +75,13 @@ def extract_reader_nodules(seg_path: Path, slice_spacing_mm: float) -> list[dict
     shared = ds.SharedFunctionalGroupsSequence[0]
     row_mm, col_mm = (float(v) for v in shared.PixelMeasuresSequence[0].PixelSpacing)
     orientation = [float(v) for v in shared.PlaneOrientationSequence[0].ImageOrientationPatient]
-    row_dir = np.array(orientation[0:3])
-    col_dir = np.array(orientation[3:6])
+    # DICOM PS3.3 C.7.6.2.1.1: the first triplet is the direction cosine of "the first
+    # row" -- i.e. the direction you move traversing ALONG a row, which is the direction
+    # of increasing COLUMN index. The second triplet is the reverse: direction of
+    # increasing ROW index. Confirmed against a real visual check (a ground-truth nodule
+    # plotted outside the patient's body) that this was previously assigned backwards.
+    col_dir = np.array(orientation[0:3])
+    row_dir = np.array(orientation[3:6])
     voxel_volume_mm3 = row_mm * col_mm * slice_spacing_mm
 
     points_by_segment: dict[int, list[np.ndarray]] = {}

@@ -49,13 +49,18 @@ def _load_ct_slices(ct_dir: Path) -> list[CtSlice]:
             continue
         row_mm, col_mm = (float(v) for v in ds.PixelSpacing)
         iop = [float(v) for v in ds.ImageOrientationPatient]
+        # DICOM PS3.3 C.7.6.2.1.1: first triplet = direction of increasing COLUMN index
+        # (the direction you move traversing along "the first row"), second triplet =
+        # direction of increasing ROW index. Was backwards here (matching the same bug
+        # already fixed in lidc_seg_ground_truth.py) -- caught by this script's own
+        # output: the ground-truth marker plotted outside the patient's body.
         slices.append(
             CtSlice(
                 path=path,
                 instance_number=int(ds.InstanceNumber),
                 position_lps_mm=tuple(float(v) for v in ds.ImagePositionPatient),
-                row_dir=tuple(iop[0:3]),
-                col_dir=tuple(iop[3:6]),
+                col_dir=tuple(iop[0:3]),
+                row_dir=tuple(iop[3:6]),
                 row_spacing_mm=row_mm,
                 col_spacing_mm=col_mm,
             )
