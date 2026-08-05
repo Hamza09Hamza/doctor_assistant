@@ -32,22 +32,24 @@ import json
 from pathlib import Path
 
 
-def _load_ct_image(ct_dir: Path):
+def _load_ct_image(ct_dir: Path, series_uid: str):
     import SimpleITK as sitk
 
     reader = sitk.ImageSeriesReader()
-    series_ids = reader.GetGDCMSeriesIDs(str(ct_dir))
-    if not series_ids:
-        raise RuntimeError(f"no DICOM series found under {ct_dir}")
-    # recursive=True: mirrors the same defensive choice made in
-    # run_monai_pathology_experts.py's _ct_dicom_to_nifti -- idc-index's on-disk layout
-    # is not guaranteed flat.
-    files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_ids[0], False, True)
+    # GetGDCMSeriesIDs (unlike GetGDCMSeriesFileNames) has no recursive option at all --
+    # confirmed from its signature, not assumed -- so it silently finds nothing when
+    # idc-index's on-disk layout nests files in subdirectories, which it does. Skip it
+    # entirely: the series UID is already known (it's what was downloaded), so go
+    # straight to GetGDCMSeriesFileNames with recursive=True, the same fix already
+    # applied for the same reason in run_monai_pathology_experts.py's _ct_dicom_to_nifti.
+    files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_uid, False, True)
+    if not files:
+        raise RuntimeError(f"no DICOM files found for series {series_uid} under {ct_dir}")
     reader.SetFileNames(files)
     return reader.Execute()
 
 
-def render(ct_dir: Path, manifest_path: Path, output_dir: Path, top_n: int) -> Path:
+def render(ct_dir: Path, manifest_path: Path, output_dir: Path, top_n: int, series_uid: str) -> Path:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -60,7 +62,7 @@ def render(ct_dir: Path, manifest_path: Path, output_dir: Path, top_n: int) -> P
     ground_truth = result["ground_truth"]
     detections = sorted(result["detections"], key=lambda d: -d["score"])[:top_n]
 
-    image = _load_ct_image(ct_dir)
+    image = _load_ct_image(ct_dir, series_uid)
     volume = sitk.GetArrayFromImage(image)  # numpy order: (slice, row, col) = (z, y, x)
     spacing = image.GetSpacing()  # (x, y, z) mm
 
@@ -106,18 +108,32 @@ def render(ct_dir: Path, manifest_path: Path, output_dir: Path, top_n: int) -> P
     return out_path
 
 
+def _default_series_uid() -> str:
+    try:
+        from scripts.run_monai_pathology_experts import LUNG_NODULE_CT_SERIES_UID
+    except ModuleNotFoundError:  # Direct execution from scripts/
+        from run_monai_pathology_experts import LUNG_NODULE_CT_SERIES_UID  # type: ignore[no-redef]
+    return LUNG_NODULE_CT_SERIES_UID
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ct-dir", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--top-n", type=int, default=5, help="how many top-score detections to render")
+    parser.add_argument(
+        "--series-uid",
+        default=None,
+        help="CT SeriesInstanceUID to load; defaults to the pinned LIDC-IDRI-0672 case",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    out_path = render(args.ct_dir, args.manifest, args.output_dir, args.top_n)
+    series_uid = args.series_uid or _default_series_uid()
+    out_path = render(args.ct_dir, args.manifest, args.output_dir, args.top_n, series_uid)
     print(f"Saved: {out_path}")
     return 0
 
