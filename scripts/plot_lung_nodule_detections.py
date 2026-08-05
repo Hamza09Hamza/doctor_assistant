@@ -3,10 +3,18 @@
 
 A direct diagnostic for scripts/run_monai_pathology_experts.py's lung_nodule result:
 does the detector's top-scoring detection sit on real, plausible anatomy near the true
-nodule, or somewhere that looks like a coordinate-conversion bug? This draws directly on
-the actual CT pixels rather than building a new DICOM SEG / Orthanc / OHIF pipeline for
-one diagnostic look -- fewer moving parts to get wrong for a question that just needs a
-picture.
+nodule, or somewhere that looks like a coordinate-conversion bug?
+
+Uses SimpleITK's own TransformPhysicalPointToContinuousIndex for the world-mm -> pixel
+conversion, deliberately NOT the hand-rolled ImageOrientationPatient/PixelSpacing math
+this script used in its first version. That first version shared its row/col convention
+with scripts/lidc_seg_ground_truth.py, and both had the identical bug (confirmed and
+fixed) -- which meant this script could not actually catch that class of error: fixing
+the same mistake in both the forward (ground-truth extraction) and inverse (this
+script's pixel projection) mapping cancels out, leaving the rendered image unchanged
+even after the "fix" landed. That happened for real on this project's first fix attempt.
+SimpleITK is a mature, independently-implemented library with no shared code path with
+lidc_seg_ground_truth.py, so agreement between the two now means something.
 
 Usage (Colab, after run_monai_pathology_experts.py --expert lung_nodule has completed):
 
@@ -21,72 +29,22 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
 
-@dataclass(frozen=True)
-class CtSlice:
-    path: Path
-    instance_number: int
-    position_lps_mm: tuple[float, float, float]
-    row_dir: tuple[float, float, float]
-    col_dir: tuple[float, float, float]
-    row_spacing_mm: float
-    col_spacing_mm: float
+def _load_ct_image(ct_dir: Path):
+    import SimpleITK as sitk
 
-
-def _load_ct_slices(ct_dir: Path) -> list[CtSlice]:
-    import pydicom
-
-    slices: list[CtSlice] = []
-    for path in sorted(item for item in ct_dir.rglob("*") if item.is_file()):
-        try:
-            ds = pydicom.dcmread(str(path), stop_before_pixels=True)
-        except Exception:
-            continue
-        if str(getattr(ds, "Modality", "")).upper() != "CT":
-            continue
-        row_mm, col_mm = (float(v) for v in ds.PixelSpacing)
-        iop = [float(v) for v in ds.ImageOrientationPatient]
-        # DICOM PS3.3 C.7.6.2.1.1: first triplet = direction of increasing COLUMN index
-        # (the direction you move traversing along "the first row"), second triplet =
-        # direction of increasing ROW index. Was backwards here (matching the same bug
-        # already fixed in lidc_seg_ground_truth.py) -- caught by this script's own
-        # output: the ground-truth marker plotted outside the patient's body.
-        slices.append(
-            CtSlice(
-                path=path,
-                instance_number=int(ds.InstanceNumber),
-                position_lps_mm=tuple(float(v) for v in ds.ImagePositionPatient),
-                col_dir=tuple(iop[0:3]),
-                row_dir=tuple(iop[3:6]),
-                row_spacing_mm=row_mm,
-                col_spacing_mm=col_mm,
-            )
-        )
-    if not slices:
-        raise RuntimeError(f"no CT slices found under {ct_dir}")
-    slices.sort(key=lambda s: s.instance_number)
-    return slices
-
-
-def _nearest_slice(slices: list[CtSlice], z_mm: float) -> CtSlice:
-    return min(slices, key=lambda s: abs(s.position_lps_mm[2] - z_mm))
-
-
-def _world_to_pixel(slice_: CtSlice, point_lps_mm: tuple[float, float, float]) -> tuple[float, float]:
-    """Inverse of the forward mapping used in scripts/lidc_seg_ground_truth.py:
-    world = origin + col*col_dir*col_spacing + row*row_dir*row_spacing.
-    row_dir/col_dir are guaranteed orthonormal by the DICOM standard, so projecting the
-    offset onto each axis directly (dot product) inverts that mapping exactly.
-    """
-    import numpy as np
-
-    offset = np.array(point_lps_mm) - np.array(slice_.position_lps_mm)
-    row = float(np.dot(offset, slice_.row_dir)) / slice_.row_spacing_mm
-    col = float(np.dot(offset, slice_.col_dir)) / slice_.col_spacing_mm
-    return row, col
+    reader = sitk.ImageSeriesReader()
+    series_ids = reader.GetGDCMSeriesIDs(str(ct_dir))
+    if not series_ids:
+        raise RuntimeError(f"no DICOM series found under {ct_dir}")
+    # recursive=True: mirrors the same defensive choice made in
+    # run_monai_pathology_experts.py's _ct_dicom_to_nifti -- idc-index's on-disk layout
+    # is not guaranteed flat.
+    files = reader.GetGDCMSeriesFileNames(str(ct_dir), series_ids[0], False, True)
+    reader.SetFileNames(files)
+    return reader.Execute()
 
 
 def render(ct_dir: Path, manifest_path: Path, output_dir: Path, top_n: int) -> Path:
@@ -95,14 +53,16 @@ def render(ct_dir: Path, manifest_path: Path, output_dir: Path, top_n: int) -> P
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import numpy as np
-    import pydicom
+    import SimpleITK as sitk
 
     manifest = json.loads(manifest_path.read_text())
     result = next(r for r in manifest["results"] if r["expert"] == "lung_nodule")
     ground_truth = result["ground_truth"]
     detections = sorted(result["detections"], key=lambda d: -d["score"])[:top_n]
 
-    slices = _load_ct_slices(ct_dir)
+    image = _load_ct_image(ct_dir)
+    volume = sitk.GetArrayFromImage(image)  # numpy order: (slice, row, col) = (z, y, x)
+    spacing = image.GetSpacing()  # (x, y, z) mm
 
     objects = [("ground truth", gt, "lime") for gt in ground_truth] + [
         (f"det #{i + 1} score={d['score']:.2f}", d, "red") for i, d in enumerate(detections)
@@ -113,19 +73,29 @@ def render(ct_dir: Path, manifest_path: Path, output_dir: Path, top_n: int) -> P
         axes = [axes]
 
     for ax, (label, obj, color) in zip(axes, objects):
-        center = obj["center_lps_mm"]
-        slice_ = _nearest_slice(slices, center[2])
-        pixels = pydicom.dcmread(str(slice_.path)).pixel_array.astype(np.int16)
+        center_lps_mm = tuple(obj["center_lps_mm"])
+        # SimpleITK convention (verified against a synthetic image before ever touching
+        # a real DICOM file): index order is (x, y, z), matching image.GetSize(), while
+        # GetArrayFromImage returns numpy order (z, y, x). So col=idx_x, row=idx_y,
+        # slice=idx_z.
+        idx_x, idx_y, idx_z = image.TransformPhysicalPointToContinuousIndex(center_lps_mm)
+        slice_index = int(round(idx_z))
+        slice_index = max(0, min(slice_index, volume.shape[0] - 1))
+
+        pixels = volume[slice_index].astype(np.int16)
         # Standard lung window (level -600, width 1500) for visibility of both airway
         # and soft tissue structures a nodule or false positive would sit against.
         windowed = np.clip(pixels, -1350, 150)
-        row, col = _world_to_pixel(slice_, center)
-        radius_px = max(obj.get("diameter_mm", max(obj.get("size_whd_mm", (5, 5, 5)))) / 2.0 / slice_.col_spacing_mm, 3.0)
+
+        diameter_mm = obj.get("diameter_mm")
+        if diameter_mm is None:
+            diameter_mm = max(obj.get("size_whd_mm", (5.0, 5.0, 5.0)))
+        radius_px = max(diameter_mm / 2.0 / spacing[0], 3.0)
 
         ax.imshow(windowed, cmap="gray")
-        circle = plt.Circle((col, row), radius_px, fill=False, edgecolor=color, linewidth=2)
+        circle = plt.Circle((idx_x, idx_y), radius_px, fill=False, edgecolor=color, linewidth=2)
         ax.add_patch(circle)
-        ax.set_title(f"{label}\nslice {slice_.instance_number}, z={center[2]:.0f}mm")
+        ax.set_title(f"{label}\nslice {slice_index}, z={center_lps_mm[2]:.0f}mm")
         ax.axis("off")
 
     output_dir.mkdir(parents=True, exist_ok=True)
