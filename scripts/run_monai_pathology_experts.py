@@ -775,6 +775,31 @@ def _match_detections(detections: list[dict], ground_truth: list[dict], score_th
             matched_gt.add(hit_index)
             true_positives.append(det)
     false_negatives = [gt for i, gt in enumerate(ground_truth) if i not in matched_gt]
+
+    # A binary hit/miss collapses "detection landed 0.3mm outside a strict radius" and
+    # "detection landed 200mm away" into the identical FN=1 -- very different results
+    # that deserve to look different. Record, for every missed ground-truth nodule, the
+    # actual distance to its nearest kept detection and by how much that missed the
+    # hit radius, regardless of score rank -- a near-miss should be visible as one, not
+    # buried in a count.
+    nearest_miss_detail = []
+    for gt_index, gt in enumerate(ground_truth):
+        if gt_index in matched_gt or not kept:
+            continue
+        gt_center = np.array(gt["center_lps_mm"])
+        nearest = min(kept, key=lambda d: np.linalg.norm(np.array(d["center_lps_mm"]) - gt_center))
+        distance = float(np.linalg.norm(np.array(nearest["center_lps_mm"]) - gt_center))
+        radius = gt["diameter_mm"] / 2.0
+        nearest_miss_detail.append(
+            {
+                "ground_truth_diameter_mm": gt["diameter_mm"],
+                "ground_truth_radius_mm": round(radius, 3),
+                "nearest_detection_score": nearest["score"],
+                "distance_mm": round(distance, 3),
+                "missed_hit_radius_by_mm": round(distance - radius, 3),
+            }
+        )
+
     return {
         "score_threshold": score_threshold,
         "true_positives": len(true_positives),
@@ -784,6 +809,7 @@ def _match_detections(detections: list[dict], ground_truth: list[dict], score_th
         "sensitivity": (
             len(true_positives) / len(ground_truth) if ground_truth else None
         ),
+        "nearest_miss_detail": nearest_miss_detail,
     }
 
 
@@ -839,6 +865,16 @@ def run_lung_nodule(args) -> dict:
         f"TP={match['true_positives']} FP={match['false_positives']} FN={match['false_negatives']} "
         f"sensitivity={match['sensitivity']}"
     )
+    for miss in match["nearest_miss_detail"]:
+        verdict = (
+            "NEAR MISS" if miss["missed_hit_radius_by_mm"] < 1.0 else "clear miss"
+        )
+        log(
+            f"  {verdict}: nearest detection (score={miss['nearest_detection_score']:.3f}) "
+            f"is {miss['distance_mm']}mm from a {miss['ground_truth_diameter_mm']:.1f}mm "
+            f"nodule (radius {miss['ground_truth_radius_mm']}mm) -- "
+            f"{miss['missed_hit_radius_by_mm']}mm outside the hit radius"
+        )
 
     return {
         "expert": "lung_nodule",
