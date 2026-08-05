@@ -134,6 +134,7 @@ def run(args) -> Path:
     from monai.transforms import (
         Compose,
         ConvertToMultiChannelBasedOnBratsClassesd,
+        CopyItemsd,
         EnsureChannelFirstd,
         Lambdad,
         LoadImaged,
@@ -178,6 +179,13 @@ def run(args) -> Path:
                 dtype=np.uint8,
             ),
             ConvertToMultiChannelBasedOnBratsClassesd(keys="label"),
+            # Stash the real (pre-normalization) intensities under a separate key before
+            # NormalizeIntensityd z-scores "image" for the model. The z-scored tensor is
+            # correct as model input but is NOT real scan intensities -- displaying it as
+            # the DICOM background (as this script previously did) produces a washed-out,
+            # near-zero-background image with no relationship to actual MRI signal.
+            # "image_raw" keeps the real values for display; only "image" is normalized.
+            CopyItemsd(keys="image", times=1, names="image_raw"),
             NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
         ]
     )
@@ -198,11 +206,12 @@ def run(args) -> Path:
         log(f"  {name}: {int(count)} predicted voxels")
 
     # Display background: FLAIR, the single most tumour-conspicuous sequence for a
-    # general (non-radiologist) viewer. Already z-score normalized by NormalizeIntensityd
-    # -- contrast/structure is preserved, only the absolute intensity range differs from
-    # raw acquisition values, which is cosmetically fine for this demo.
+    # general (non-radiologist) viewer. Uses "image_raw" (real scan intensities, saved
+    # above BEFORE NormalizeIntensityd ran) -- NOT "image" (the model's z-scored input,
+    # which has no relationship to real signal units and was the actual cause of the
+    # washed-out/gray-background look in earlier bundles).
     flair_index = BUNDLE_MODALITY_ORDER.index("flair")
-    background = case["image"][flair_index].cpu().numpy()
+    background = case["image_raw"][flair_index].cpu().numpy()
     affine_ras = np.asarray(case["image"].affine)
 
     work_dir = args.scratch_dir / f"brain_tumor_case{args.case_index:03d}_seg_bundle"
