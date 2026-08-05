@@ -135,14 +135,55 @@ The practical takeaway: a diagnostic that shares assumptions with the code it's
 checking can't catch a shared mistake, and passing tests only prove what the
 tests happened to exercise. Both lessons apply beyond this module.
 
+## Viewing results in OHIF, not just as JSON
+
+Both results can be turned into a bundle viewable in the project's real OHIF viewer,
+through the existing, already-proven Orthanc-upload path
+(`scripts/publish_dicom_seg_to_orthanc.py`, run locally — unmodified, no new
+backend/frontend code needed at all; OHIF's own stock DICOM SEG viewport renders the
+result).
+
+- **Lung nodule** (`scripts/build_lung_nodule_seg_bundle.py`): the real LIDC-IDRI-0672
+  CT, plus two independently-toggleable DICOM SEG objects rasterized from the
+  manifest's already-computed detections and consensus ground truth — an "AI
+  detections" SEG and a "ground truth (4-reader consensus)" SEG. No synthetic data
+  needed; this is a real DICOM CT throughout.
+- **Brain tumour** (`scripts/build_brain_tumor_seg_bundle.py`): MSD Task01_BrainTumour
+  ships as NIfTI only, with no real DICOM series a SEG could reference — the same
+  blocker documented for a different NIfTI-only demo elsewhere in this project. Solved
+  with a new, reusable adapter, `scripts/nifti_to_dicom.py`, that synthesizes a
+  standards-conformant DICOM MRI series from any NIfTI + affine. Every identifying
+  field (`PatientID`, `PatientName`, `SeriesDescription`, `Manufacturer`) states plainly
+  that the container is synthetic; the pixel data and the model's predicted TC/WT/ET
+  mask are both real. Its RAS+→LPS geometry conversion is verified against an
+  independent computation with known geometry before ever touching real data
+  (`tests/test_nifti_to_dicom.py`), including a real, harmless finding along the way:
+  GDCM-based readers (SimpleITK, OHIF/cornerstone) sort a loaded series by projected
+  spatial position, not by filename or `InstanceNumber` — a written slice order can
+  come back reversed in a viewer without any geometry actually being wrong, since each
+  slice's own absolute position stays correct regardless.
+
+Both builder scripts only read this workflow's already-computed results (the manifest,
+or one MSD validation case) — no GPU re-inference beyond one single-case forward pass
+for the brain-tumour demo. `highdicom` is required only by these two scripts and their
+tests, not by `run_monai_pathology_experts.py` itself.
+
 ## Files
 
 - `scripts/run_monai_pathology_experts.py` — both experts' full pipeline
 - `scripts/lidc_seg_ground_truth.py` — multi-reader DICOM SEG consensus ground truth
 - `scripts/plot_lung_nodule_detections.py` — SimpleITK-based visual diagnostic
+- `scripts/nifti_to_dicom.py` — reusable NIfTI→synthetic-DICOM adapter
+- `scripts/build_lung_nodule_seg_bundle.py` — real-CT AI/ground-truth SEG bundle
+- `scripts/build_brain_tumor_seg_bundle.py` — synthetic-DICOM MRI + prediction SEG bundle
 - `tests/test_lidc_seg_ground_truth.py` — regression tests, including the
   anisotropic-spacing row/col swap guard
-- `notebooks/monai_pathology_experts_colab.ipynb` — the Colab run
+- `tests/test_nifti_to_dicom.py`, `tests/test_build_brain_tumor_seg_bundle.py`,
+  `tests/test_build_lung_nodule_seg_bundle.py` — regression tests for the OHIF-bundle
+  path, including the sphere-rasterization volume check and the SEG source-series
+  reference check
+- `notebooks/monai_pathology_experts_colab.ipynb` — the Colab run, including both
+  bundle-builder cells
 
 ## Next, if continuing this workstream
 
