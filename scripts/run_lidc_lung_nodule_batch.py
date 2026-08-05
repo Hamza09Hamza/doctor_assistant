@@ -147,8 +147,14 @@ def discover_clean_candidates(cache_dir: Path, client=None) -> list[dict]:
 
 def _client_download(client, series_uid: str, destination: Path) -> None:
     log(f"Downloading IDC series {series_uid} ...")
+    # show_progress_bar=False: tqdm's dynamic cursor-control output is not safe when
+    # multiple threads render bars to the same stdout concurrently -- with several
+    # download workers active at once this can visibly stall (bars fighting over
+    # terminal control), even though the underlying downloads may be proceeding fine.
+    # Our own log() lines above/in _stage_case are the real progress signal in batch
+    # mode; the bar is purely decorative and not worth the risk here.
     client.download_dicom_series(
-        series_uid, str(destination), quiet=False, show_progress_bar=True
+        series_uid, str(destination), quiet=False, show_progress_bar=False
     )
 
 
@@ -158,14 +164,16 @@ def _stage_case(candidate: dict, scratch_dir: Path, client) -> dict:
     shared client passed in (see get_idc_client()) rather than run_monai_pathology_
     experts._idc_download(), which would construct a new, expensive-to-build client
     per call."""
-    case_dir = scratch_dir / "lidc_batch" / candidate["patient_id"]
+    patient_id = candidate["patient_id"]
+    case_dir = scratch_dir / "lidc_batch" / patient_id
     ct_dir = case_dir / "ct"
     ct_files = _find_dicom_files(ct_dir) if ct_dir.exists() else []
     if not ct_files:
         _client_download(client, candidate["ct_series_uid"], ct_dir)
         ct_files = _find_dicom_files(ct_dir)
     if not ct_files:
-        raise RuntimeError(f"{candidate['patient_id']}: CT download produced no readable DICOM files")
+        raise RuntimeError(f"{patient_id}: CT download produced no readable DICOM files")
+    log(f"  {patient_id}: CT done ({len(ct_files)} files)")
 
     seg_paths = []
     for i, seg_uid in enumerate(candidate["seg_series_uids"]):
@@ -174,6 +182,7 @@ def _stage_case(candidate: dict, scratch_dir: Path, client) -> dict:
         if len(found) != 1:
             _client_download(client, seg_uid, seg_dir)
             found = _find_dicom_files(seg_dir)
+        log(f"  {patient_id}: reader_{i} SEG done")
         if len(found) != 1:
             raise RuntimeError(
                 f"{candidate['patient_id']}: expected exactly one SEG file for "
