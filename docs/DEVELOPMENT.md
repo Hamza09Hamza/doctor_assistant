@@ -117,14 +117,29 @@ Evaluation samples default to
 The NIH mirror is pinned to a specific Hugging Face dataset commit by default; preserve
 that revision when comparing runs.
 
-## CT and TotalSegmentator
+## CT pathology experts (MONAI)
 
 For the current pathology proof, use
-`notebooks/lung_nodule_segmentation_colab.ipynb` on an L4. It needs no user-provided
+`notebooks/monai_pathology_experts_colab.ipynb` on an L4 (or `--expert brain_tumor` /
+`--expert lung_nodule` directly via `scripts/run_monai_pathology_experts.py`). It
+replaced the TotalSegmentator `lung_nodules` path below: that task has no published
+Dice/FROC anywhere (it's an anatomy segmenter's side-task, not a purpose-built
+detector) and missed a clear 10mm expert-annotated nodule on this project's original
+LIDC case. Two purpose-built MONAI Model Zoo bundles (`brats_mri_segmentation`,
+`lung_nodule_ct_detection`, both Apache-2.0) replaced it. See
+`docs/MONAI_PATHOLOGY_EXPERTS_RESULTS.md` for full results, methodology, and two real
+coordinate-mapping bugs worth reading before touching this pipeline again.
+
+## CT and TotalSegmentator (legacy path, superseded above for pathology detection)
+
+`notebooks/lung_nodule_segmentation_colab.ipynb` on an L4 needs no user-provided
 DICOM: it downloads pinned public LIDC series `LIDC-IDRI-0686`, runs the
 TotalSegmentator `lung_nodules` task, requires a non-empty nodule segment, and creates
 an OHIF bundle with both the prediction and a radiologist DICOM SEG. This is a narrow
-lung-nodule benchmark, not a universal abnormality detector.
+lung-nodule benchmark, not a universal abnormality detector, and `LIDC-IDRI-0686` is
+separately confirmed to be inside `lung_nodule_ct_detection`'s own LUNA16 training
+split (see the MONAI doc above) -- irrelevant for TotalSegmentator, which is not
+LUNA16-trained, but worth knowing before reusing this UID elsewhere.
 
 Use a separate environment for TotalSegmentator. Its nnU-Net stack can replace NumPy,
 SciPy, and Torch versions required by the chest-data and reporting environment.
