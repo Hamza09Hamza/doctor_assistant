@@ -155,14 +155,15 @@ def discover_clean_candidates(cache_dir: Path, client=None) -> list[dict]:
 
 def _client_download(client, series_uid: str, destination: Path) -> None:
     log(f"Downloading IDC series {series_uid} ...")
-    # show_progress_bar=False: tqdm's dynamic cursor-control output is not safe when
-    # multiple threads render bars to the same stdout concurrently -- with several
-    # download workers active at once this can visibly stall (bars fighting over
-    # terminal control), even though the underlying downloads may be proceeding fine.
-    # Our own log() lines above/in _stage_case are the real progress signal in batch
-    # mode; the bar is purely decorative and not worth the risk here.
+    # quiet=True: suppresses s5cmd's own stdout, which otherwise echoes a full "cp
+    # s3://..." line for every single DICOM file transferred -- hundreds of lines per
+    # case, all noise, no signal (confirmed: 1400+ lines for a handful of cases). Our
+    # own log() lines here and in _stage_case are the actual progress signal in batch
+    # mode. show_progress_bar=False for a separate reason: tqdm's dynamic cursor-control
+    # output is not safe when multiple threads render bars to the same stdout
+    # concurrently -- can visibly stall even though downloads are proceeding fine.
     client.download_dicom_series(
-        series_uid, str(destination), quiet=False, show_progress_bar=False
+        series_uid, str(destination), quiet=True, show_progress_bar=False
     )
 
 
