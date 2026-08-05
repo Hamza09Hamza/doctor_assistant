@@ -672,6 +672,12 @@ def _load_lung_nodule_detector(bundle_dir: Path, device):
     detector.set_sliding_window_inferer(
         roi_size=(512, 512, 192), overlap=0.25, sw_batch_size=1, mode="constant", device="cpu"
     )
+    # RetinaNetDetector is its own nn.Module with its own .training flag, separate from
+    # the wrapped network's -- it defaults to train() like any nn.Module, and forward()
+    # checks that flag to decide whether ground-truth targets are required. Calling
+    # network.eval() alone does not touch it; without this, inference-only calls raise
+    # "Please provide ground truth targets during training."
+    detector.eval()
     return detector.to(device)
 
 
