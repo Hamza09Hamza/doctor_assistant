@@ -216,6 +216,29 @@ def _stage_case(candidate: dict, scratch_dir: Path, client) -> dict:
     return {**candidate, "ct_dir": ct_dir, "seg_paths": seg_paths}
 
 
+def load_partial_result(partial_dir: Path, patient_id: str) -> dict | None:
+    """Checkpoint read: a previously-saved per-case result, or None if absent/corrupt.
+
+    A crash mid-write (kernel death, power loss) could in principle leave a corrupt
+    file; treated as "not cached yet" rather than fatal, so a rerun just recomputes it."""
+    path = partial_dir / f"{patient_id}.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def save_partial_result(partial_dir: Path, patient_id: str, case_result: dict) -> None:
+    """Checkpoint write: atomic on POSIX (write to a temp file, then rename) so a crash
+    during the write itself can never leave a half-written, corrupt result file."""
+    path = partial_dir / f"{patient_id}.json"
+    tmp_path = path.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(case_result, indent=2, default=str))
+    tmp_path.replace(path)
+
+
 def run_batch(args) -> dict:
     import torch
 
@@ -241,6 +264,17 @@ def run_batch(args) -> dict:
                 log(f"  FAILED staging {candidate['patient_id']}: {exc}")
                 failed_staging.append({"patient_id": candidate["patient_id"], "error": str(exc)})
 
+    # Checkpoint every case's result to disk the moment it's computed, and skip
+    # already-computed cases on a rerun. Without this, a hard crash (kernel death,
+    # runtime disconnect, OOM) mid-batch loses every case computed so far -- observed
+    # live: 5 real cases finished (with real TP/FP/FN/sensitivity) before a kernel
+    # crash, and none of it was recoverable because the old code only wrote a result
+    # after the ENTIRE batch finished. GPU inference is the expensive step here (up to
+    # ~50s/case observed); staging/download is comparatively cheap to redo, but
+    # inference should never have to be redone for a case that already succeeded.
+    partial_dir = args.output_dir / "lidc_lung_nodule_batch_partial"
+    partial_dir.mkdir(parents=True, exist_ok=True)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log(f"Device: {device}")
     bundle_dir = download_bundle(LUNG_NODULE_BUNDLE, args.data_dir / "bundles")
@@ -252,6 +286,20 @@ def run_batch(args) -> dict:
     total_tp = total_fp = total_fn = total_gt = 0
     for case in staged:
         patient_id = case["patient_id"]
+        cached = load_partial_result(partial_dir, patient_id)
+        if cached is not None:
+            log(f"--- {patient_id} (resumed from checkpoint) ---")
+            match = cached["match_at_threshold"]
+            log(
+                f"  TP={match['true_positives']} FP={match['false_positives']} "
+                f"FN={match['false_negatives']} sensitivity={match['sensitivity']}"
+            )
+            total_tp += match["true_positives"]
+            total_fp += match["false_positives"]
+            total_fn += match["false_negatives"]
+            total_gt += match["ground_truth_count"]
+            per_case_results.append(cached)
+            continue
         try:
             log(f"--- {patient_id} ---")
             nifti_path = args.scratch_dir / "lidc_batch" / patient_id / "ct.nii.gz"
@@ -280,15 +328,15 @@ def run_batch(args) -> dict:
             total_fn += match["false_negatives"]
             total_gt += match["ground_truth_count"]
 
-            per_case_results.append(
-                {
-                    "patient_id": patient_id,
-                    "ct_series_uid": case["ct_series_uid"],
-                    "ground_truth": ground_truth,
-                    "detections": detections,
-                    "match_at_threshold": match,
-                }
-            )
+            case_result = {
+                "patient_id": patient_id,
+                "ct_series_uid": case["ct_series_uid"],
+                "ground_truth": ground_truth,
+                "detections": detections,
+                "match_at_threshold": match,
+            }
+            save_partial_result(partial_dir, patient_id, case_result)
+            per_case_results.append(case_result)
         except Exception as exc:  # noqa: BLE001 -- one bad case must not abort the batch
             log(f"  FAILED inference on {patient_id}: {exc}")
             failed_inference.append({"patient_id": patient_id, "error": str(exc)})

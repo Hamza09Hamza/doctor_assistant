@@ -10,7 +10,9 @@ as IDC's index is revised, so it is not asserted here.
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 try:
     import pandas as pd
@@ -21,6 +23,44 @@ except ImportError:
 
 if PANDAS_AVAILABLE:
     from scripts.run_lidc_lung_nodule_batch import filter_clean_candidates
+
+from scripts.run_lidc_lung_nodule_batch import load_partial_result, save_partial_result
+
+
+class PartialResultCheckpointTests(unittest.TestCase):
+    """save_partial_result/load_partial_result: the crash-recovery mechanism added
+    after a real kernel crash mid-batch lost 5 already-computed cases' worth of GPU
+    inference. Round-trips a result through disk, and confirms a corrupt/partial file
+    (as a hard crash mid-write could in principle leave, though the atomic rename in
+    save_partial_result is meant to prevent that) is treated as "not cached" rather
+    than raising."""
+
+    def test_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            partial_dir = Path(tmp)
+            case_result = {
+                "patient_id": "LIDC-IDRI-0079",
+                "ct_series_uid": "1.2.3",
+                "ground_truth": [{"diameter_mm": 5.0, "center_lps_mm": [1.0, 2.0, 3.0]}],
+                "detections": [{"score": 0.9, "center_lps_mm": [1.1, 2.1, 3.1]}],
+                "match_at_threshold": {
+                    "true_positives": 1, "false_positives": 0, "false_negatives": 0,
+                    "ground_truth_count": 1, "sensitivity": 1.0,
+                },
+            }
+            save_partial_result(partial_dir, "LIDC-IDRI-0079", case_result)
+            loaded = load_partial_result(partial_dir, "LIDC-IDRI-0079")
+            self.assertEqual(loaded, case_result)
+
+    def test_missing_file_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(load_partial_result(Path(tmp), "no-such-patient"))
+
+    def test_corrupt_file_treated_as_absent_not_fatal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            partial_dir = Path(tmp)
+            (partial_dir / "LIDC-IDRI-0079.json").write_text("{not valid json")
+            self.assertIsNone(load_partial_result(partial_dir, "LIDC-IDRI-0079"))
 
 
 @unittest.skipUnless(PANDAS_AVAILABLE, "pandas not installed in this environment")
