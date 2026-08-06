@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import gc
 import json
 import sys
 import urllib.request
@@ -340,6 +341,21 @@ def run_batch(args) -> dict:
         except Exception as exc:  # noqa: BLE001 -- one bad case must not abort the batch
             log(f"  FAILED inference on {patient_id}: {exc}")
             failed_inference.append({"patient_id": patient_id, "error": str(exc)})
+        finally:
+            # The detector's sliding-window inferer runs on host RAM, not GPU (device=
+            # "cpu" in _load_lung_nodule_detector -- large 512x512x192 windows), so this
+            # loop's real memory pressure is host RAM, not VRAM (nvidia-smi will look
+            # nearly idle even while this is the actual bottleneck). Explicit cleanup
+            # between cases -- rather than trusting Python's GC to keep up inside one
+            # long-lived process over 27 large-volume iterations -- guards against a
+            # gradual RAM buildup ending in an OS-level OOM kill, which crashes the
+            # whole kernel and is NOT a Python exception this loop's own try/except can
+            # catch (observed live: a real Jupyter "kernel died and is being
+            # automatically restarted" mid-batch, after several cases had already
+            # succeeded -- consistent with this, not with a caught Python error).
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     overall_sensitivity = total_tp / total_gt if total_gt else None
     n_cases = len(per_case_results)
