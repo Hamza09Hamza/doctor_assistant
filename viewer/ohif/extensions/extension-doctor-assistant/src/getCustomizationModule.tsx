@@ -33,14 +33,35 @@ export default function getCustomizationModule() {
             columns.filter(col => !['mrn', 'accession', 'instances'].includes(col.id)),
         },
         // Relabels the W/L toolbar button in plain language for a non-radiologist
-        // audience (see modes/doctor-assistant for the rest of the toolbar trim).
+        // audience (see modes/doctor-assistant for the rest of the toolbar trim), and
+        // appends the MedSAMBox interactive-segmentation button (registered by
+        // tools/registerMedSAMBoxTool.ts, activated via cornerstone's own
+        // setToolActiveToolbar/evaluate.cornerstoneTool -- no new command needed).
         'cornerstone.toolbarButtons': {
-          $apply: (buttons: any[]) =>
-            buttons.map(btn =>
+          $apply: (buttons: any[]) => [
+            ...buttons.map(btn =>
               btn.id === 'WindowLevel'
                 ? { ...btn, props: { ...btn.props, label: 'Brightness/Contrast' } }
                 : btn
             ),
+            {
+              id: 'MedSAMBox',
+              uiType: 'ohif.toolButton',
+              props: {
+                type: 'tool',
+                icon: 'tool-rectangle',
+                label: 'Segment (draw a box)',
+                // Mirrors extensions/cornerstone/src/customizations/toolbarButtonsCustomization.ts's
+                // own `setToolActiveToolbar` const shape exactly (same toolGroupIds this
+                // extension's registerMedSAMBoxTool.ts adds MedSAMBox to).
+                commands: {
+                  commandName: 'setToolActiveToolbar',
+                  commandOptions: { toolGroupIds: ['default', 'mpr', 'SRToolGroup', 'volume3d'] },
+                },
+                evaluate: 'evaluate.cornerstoneTool',
+              },
+            },
+          ],
         },
         // Strips the raw W/L numeric readout (pure clinical jargon, e.g.
         // "W: 2500 L: -600") from the bottom-left viewport overlay; keeps zoom %

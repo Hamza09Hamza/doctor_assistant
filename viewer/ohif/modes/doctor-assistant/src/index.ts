@@ -75,7 +75,12 @@ export const modeInstance = {
       // "what do I do here" surfaces — the single highest-leverage cut for this audience.
       // TrackballRotate/Crosshairs dropped: volumetric/MPR-only, meaningless for 2D
       // chest X-ray review. Capture dropped for v1 minimalism (trivial to re-add).
-      primary: ['WindowLevel', 'Zoom', 'Pan', 'Layout', 'MoreTools'],
+      // MedSAMBox is the deliberate exception to "no clinical tools for lay users": it's
+      // not a measurement/caliper tool requiring training, it's a guided "draw a box
+      // around what looks wrong, AI outlines it, review the result" interaction — closer
+      // to an assistive annotation than a manual ROI tool (see
+      // extensions/extension-doctor-assistant/src/tools/registerMedSAMBoxTool.ts).
+      primary: ['WindowLevel', 'Zoom', 'Pan', 'MedSAMBox', 'Layout', 'MoreTools'],
       // Trimmed to basic image manipulation only — drops TagBrowser (raw DICOM tag
       // browser), Probe, Cine, angle/calibration tools, StackScroll, etc.
       MoreTools: ['Reset', 'rotate-right', 'flipHorizontal', 'invert', 'Magnify'],

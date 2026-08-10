@@ -52,6 +52,9 @@ api_storage/
 .vscode/
 .claude/
 
+# Private, manually shared cold-start context. Never commit this second handoff.
+/docs/AI_HANDOFF_2.md
+
 # Vendored OHIF viewer (viewer/ohif/) — source is committed per the chosen
 # "vendor as subdirectory" layout, but build artifacts/dependencies are not.
 viewer/ohif/**/node_modules/

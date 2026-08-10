@@ -12,8 +12,10 @@ from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, SegmentationStorage, generate_uid
 
 from scripts.publish_dicom_seg_to_orthanc import (
+    _resolve_bundle,
     clinique_amina_url,
     upload_dicom_files,
+    verify_series_visible,
     verify_study_visible,
 )
 from scripts.run_totalsegmentator_dicom_seg import (
@@ -356,6 +358,19 @@ class DicomSegWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "unsafe path"):
                 _safe_extract_zip(archive, root / "output")
 
+    def test_comparison_bundle_discovers_expert_seg_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bundle = root / "comparison.zip"
+            with zipfile.ZipFile(bundle, "w") as archive:
+                archive.writestr("source_dicom/instance.dcm", b"ct")
+                archive.writestr("totalsegmentator_seg.dcm", b"ai")
+                archive.writestr("expert_reference/radiologist.dcm", b"expert")
+            source_dir, ai_seg, expert_segs = _resolve_bundle(bundle, root / "extracted")
+        self.assertEqual(source_dir.name, "source_dicom")
+        self.assertEqual(ai_seg.name, "totalsegmentator_seg.dcm")
+        self.assertEqual([path.name for path in expert_segs], ["radiologist.dcm"])
+
     def test_upload_and_qido_verification_use_orthanc_endpoints(self) -> None:
         requests: list[tuple[str, str]] = []
 
@@ -363,6 +378,11 @@ class DicomSegWorkflowTests(unittest.TestCase):
             requests.append((request.method, request.url.path))
             if request.method == "POST":
                 return httpx.Response(200, json={"Status": "Success"})
+            if request.url.path.endswith("/series"):
+                return httpx.Response(
+                    200,
+                    json=[{"0020000E": {"vr": "UI", "Value": ["1.2.3.4"]}}],
+                )
             return httpx.Response(200, json=[{"0020000D": {"vr": "UI"}}])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -374,8 +394,16 @@ class DicomSegWorkflowTests(unittest.TestCase):
             ) as client:
                 uploaded, existing = upload_dicom_files(client, [dicom_file])
                 verify_study_visible(client, "1.2.3")
+                verify_series_visible(client, "1.2.3", {"1.2.3.4"})
         self.assertEqual((uploaded, existing), (1, 0))
-        self.assertEqual(requests, [("POST", "/instances"), ("GET", "/dicom-web/studies")])
+        self.assertEqual(
+            requests,
+            [
+                ("POST", "/instances"),
+                ("GET", "/dicom-web/studies"),
+                ("GET", "/dicom-web/studies/1.2.3/series"),
+            ],
+        )
 
     def test_clinique_amina_url_targets_orthanc_data_source(self) -> None:
         self.assertEqual(

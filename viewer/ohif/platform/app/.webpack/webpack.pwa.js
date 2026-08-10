@@ -21,6 +21,16 @@ const PROXY_TARGET = process.env.PROXY_TARGET;
 const PROXY_DOMAIN = process.env.PROXY_DOMAIN;
 const PROXY_PATH_REWRITE_FROM = process.env.PROXY_PATH_REWRITE_FROM;
 const PROXY_PATH_REWRITE_TO = process.env.PROXY_PATH_REWRITE_TO;
+// The doctor_assistant findings/segmentation API (see ../../../../../api/) is a
+// separate backend, not Orthanc -- proxied same-origin under /doctor-assistant-api so
+// the browser only ever needs to reach the dev server's own port. Without this, a
+// remote/sandboxed dev environment that only forwards OHIF_PORT (not the API's own
+// port) makes every findings-panel/segment-box fetch() fail with a bare
+// "TypeError: Failed to fetch" and no server-side trace at all -- CORS_ORIGIN alone
+// doesn't help because the browser never reaches the API's host in the first place.
+// config/doctor_assistant.js's `doctorAssistantApiBaseUrl` must be set to
+// '/doctor-assistant-api' (relative) to actually go through this proxy.
+const DOCTOR_ASSISTANT_API_TARGET = process.env.DOCTOR_ASSISTANT_API_TARGET;
 const IS_COVERAGE = process.env.COVERAGE === 'true';
 
 const OHIF_PORT = Number(process.env.OHIF_PORT || 3000);
@@ -210,6 +220,16 @@ module.exports = (env, argv) => {
           context: ['/dicomweb'],
           target: 'http://localhost:5000',
         },
+        ...(DOCTOR_ASSISTANT_API_TARGET
+          ? [
+              {
+                context: ['/doctor-assistant-api'],
+                target: DOCTOR_ASSISTANT_API_TARGET,
+                changeOrigin: true,
+                pathRewrite: { '^/doctor-assistant-api': '' },
+              },
+            ]
+          : []),
       ],
       static: [
         {
@@ -248,6 +268,19 @@ module.exports = (env, argv) => {
           [`^${PROXY_PATH_REWRITE_FROM}`]: PROXY_PATH_REWRITE_TO,
         },
       },
+      // This block fully replaces devServer.proxy above (not merges), so the
+      // doctor-assistant-api entry has to be re-added here too or dev:doctor-assistant
+      // (which always sets PROXY_TARGET/PROXY_DOMAIN) would silently lose it.
+      ...(DOCTOR_ASSISTANT_API_TARGET
+        ? [
+            {
+              context: ['/doctor-assistant-api'],
+              target: DOCTOR_ASSISTANT_API_TARGET,
+              changeOrigin: true,
+              pathRewrite: { '^/doctor-assistant-api': '' },
+            },
+          ]
+        : []),
     ];
   }
 

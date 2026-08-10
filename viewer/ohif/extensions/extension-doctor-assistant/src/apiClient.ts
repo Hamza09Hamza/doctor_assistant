@@ -91,3 +91,27 @@ export function submitSeriesAnalysis(seriesId: string): Promise<{ analysis_id: s
 export function getAnalysisResult(analysisId: string): Promise<AnalysisResult> {
   return apiFetch(`/v1/analyses/${analysisId}`);
 }
+
+export interface SegmentBoxResult {
+  sop_instance_uid: string;
+  mask_rle: { size: [number, number]; counts: number[] };
+  model_version: string;
+}
+
+/**
+ * On-demand interactive segmentation: `boxXyxy` is a box in this SOP instance's own
+ * pixel coordinates (row/col, not world/patient space) — the caller converts from a
+ * viewport annotation before calling this. Not a queued analysis; the response comes
+ * back in this same request.
+ */
+export function segmentBox(
+  seriesId: string,
+  sopInstanceUid: string,
+  boxXyxy: [number, number, number, number]
+): Promise<SegmentBoxResult> {
+  return apiFetch(`/v1/series/${seriesId}/segment-box`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sop_instance_uid: sopInstanceUid, box_xyxy: boxXyxy }),
+  });
+}

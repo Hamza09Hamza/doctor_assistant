@@ -1,0 +1,192 @@
+/content/doctor_assistant
+remote: Enumerating objects: 7, done.
+remote: Counting objects: 100% (7/7), done.
+remote: Compressing objects: 100% (1/1), done.
+remote: Total 4 (delta 3), reused 4 (delta 3), pack-reused 0 (from 0)
+Unpacking objects: 100% (4/4), 1020 bytes | 340.00 KiB/s, done.
+From https://github.com/Hamza09Hamza/doctor_assistant
+ * branch            classifier-evaluation-colab -> FETCH_HEAD
+   556bb0a..b5403b5  classifier-evaluation-colab -> origin/classifier-evaluation-colab
+Updating 556bb0a..b5403b5
+Fast-forward
+ scripts/run_lidc_lung_nodule_batch.py | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+[13:19:00] LUNA16 training/eval corpus: 888 unique series
+[13:19:00] Discovered 27 clean candidate case(s).
+[13:19:00] Running batch on 27 case(s).
+[13:19:00] Staging 27 case(s) sequentially (1 worker) ...
+[13:19:00]   LIDC-IDRI-0079: CT done (113 files)
+[13:19:00]   LIDC-IDRI-0079: reader_0 SEG done
+[13:19:00]   LIDC-IDRI-0079: reader_1 SEG done
+[13:19:00]   LIDC-IDRI-0079: reader_2 SEG done
+[13:19:00]   LIDC-IDRI-0079: reader_3 SEG done
+[13:19:00]   staged: LIDC-IDRI-0079
+[13:19:00]   LIDC-IDRI-0104: CT done (105 files)
+[13:19:00]   LIDC-IDRI-0104: reader_0 SEG done
+[13:19:00]   LIDC-IDRI-0104: reader_1 SEG done
+[13:19:00]   LIDC-IDRI-0104: reader_2 SEG done
+[13:19:00]   LIDC-IDRI-0104: reader_3 SEG done
+[13:19:00]   staged: LIDC-IDRI-0104
+[13:19:00]   LIDC-IDRI-0115: CT done (112 files)
+[13:19:00]   LIDC-IDRI-0115: reader_0 SEG done
+[13:19:00]   LIDC-IDRI-0115: reader_1 SEG done
+[13:19:00]   LIDC-IDRI-0115: reader_2 SEG done
+[13:19:00]   LIDC-IDRI-0115: reader_3 SEG done
+[13:19:00]   staged: LIDC-IDRI-0115
+[13:19:00]   LIDC-IDRI-0117: CT done (122 files)
+[13:19:00]   LIDC-IDRI-0117: reader_0 SEG done
+[13:19:00]   LIDC-IDRI-0117: reader_1 SEG done
+[13:19:00]   LIDC-IDRI-0117: reader_2 SEG done
+[13:19:00]   LIDC-IDRI-0117: reader_3 SEG done
+[13:19:00]   staged: LIDC-IDRI-0117
+[13:19:00]   LIDC-IDRI-0146: CT done (310 files)
+[13:19:00]   LIDC-IDRI-0146: reader_0 SEG done
+[13:19:00]   LIDC-IDRI-0146: reader_1 SEG done
+[13:19:00]   LIDC-IDRI-0146: reader_2 SEG done
+[13:19:00]   LIDC-IDRI-0146: reader_3 SEG done
+[13:19:00]   staged: LIDC-IDRI-0146
+[13:19:00]   LIDC-IDRI-0150: CT done (102 files)
+[13:19:00]   LIDC-IDRI-0150: reader_0 SEG done
+[13:19:00]   LIDC-IDRI-0150: reader_1 SEG done
+[13:19:00] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.10776.1553294045.557380 ...
+2026-08-05 13:19:00,789 - Disk size needed: 0.14 bytes
+2026-08-05 13:19:00,789 - Disk size available: 199.57 GB
+2026-08-05 13:19:00,894 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:02,895 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0150/seg/reader_2
+[13:19:02]   LIDC-IDRI-0150: reader_2 SEG done
+[13:19:02] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.10778.1553294048.248355 ...
+2026-08-05 13:19:02,924 - Disk size needed: 0.14 bytes
+2026-08-05 13:19:02,924 - Disk size available: 199.57 GB
+2026-08-05 13:19:03,021 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:05,024 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0150/seg/reader_3
+[13:19:05]   LIDC-IDRI-0150: reader_3 SEG done
+[13:19:05]   staged: LIDC-IDRI-0150
+[13:19:05]   LIDC-IDRI-0156: CT done (127 files)
+[13:19:05]   LIDC-IDRI-0156: reader_0 SEG done
+[13:19:05]   LIDC-IDRI-0156: reader_1 SEG done
+[13:19:05]   LIDC-IDRI-0156: reader_2 SEG done
+[13:19:05]   LIDC-IDRI-0156: reader_3 SEG done
+[13:19:05]   staged: LIDC-IDRI-0156
+[13:19:05]   LIDC-IDRI-0296: CT done (121 files)
+[13:19:05] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.17681.1553300388.642464 ...
+2026-08-05 13:19:05,261 - Disk size needed: 0.17 bytes
+2026-08-05 13:19:05,261 - Disk size available: 199.57 GB
+2026-08-05 13:19:05,438 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:07,941 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0296/seg/reader_0
+[13:19:07]   LIDC-IDRI-0296: reader_0 SEG done
+[13:19:07] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.17683.1553300391.566366 ...
+2026-08-05 13:19:07,971 - Disk size needed: 0.14 bytes
+2026-08-05 13:19:07,971 - Disk size available: 199.57 GB
+2026-08-05 13:19:08,064 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:10,066 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0296/seg/reader_1
+[13:19:10]   LIDC-IDRI-0296: reader_1 SEG done
+[13:19:10] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.17685.1553300394.497267 ...
+2026-08-05 13:19:10,094 - Disk size needed: 0.17 bytes
+2026-08-05 13:19:10,095 - Disk size available: 199.57 GB
+2026-08-05 13:19:10,192 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:12,193 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0296/seg/reader_2
+[13:19:12]   LIDC-IDRI-0296: reader_2 SEG done
+[13:19:12] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.17687.1553300397.456460 ...
+2026-08-05 13:19:12,223 - Disk size needed: 0.17 bytes
+2026-08-05 13:19:12,223 - Disk size available: 199.57 GB
+2026-08-05 13:19:12,316 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:14,318 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0296/seg/reader_3
+[13:19:14]   LIDC-IDRI-0296: reader_3 SEG done
+[13:19:14]   staged: LIDC-IDRI-0296
+[13:19:14] Downloading IDC series 1.3.6.1.4.1.14519.5.2.1.6279.6001.136756942516460150151065708673 ...
+2026-08-05 13:19:14,348 - Disk size needed: 58.4 MB
+2026-08-05 13:19:14,348 - Disk size available: 199.57 GB
+2026-08-05 13:19:14,442 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:18,460 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0310/ct
+[13:19:18]   LIDC-IDRI-0310: CT done (111 files)
+[13:19:18] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.18973.1553301874.168024 ...
+2026-08-05 13:19:18,619 - Disk size needed: 0.14 bytes
+2026-08-05 13:19:18,620 - Disk size available: 199.51 GB
+2026-08-05 13:19:18,772 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:20,775 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0310/seg/reader_0
+[13:19:20]   LIDC-IDRI-0310: reader_0 SEG done
+[13:19:20] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.18975.1553301876.829762 ...
+2026-08-05 13:19:20,804 - Disk size needed: 0.1 bytes
+2026-08-05 13:19:20,804 - Disk size available: 199.51 GB
+2026-08-05 13:19:20,900 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:22,901 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0310/seg/reader_1
+[13:19:22]   LIDC-IDRI-0310: reader_1 SEG done
+[13:19:22] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.18977.1553301879.447289 ...
+2026-08-05 13:19:22,931 - Disk size needed: 0.14 bytes
+2026-08-05 13:19:22,931 - Disk size available: 199.51 GB
+2026-08-05 13:19:23,030 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:25,033 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0310/seg/reader_2
+[13:19:25]   LIDC-IDRI-0310: reader_2 SEG done
+[13:19:25] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.18979.1553301882.275263 ...
+2026-08-05 13:19:25,062 - Disk size needed: 0.17 bytes
+2026-08-05 13:19:25,062 - Disk size available: 199.51 GB
+2026-08-05 13:19:25,172 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:27,173 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0310/seg/reader_3
+[13:19:27]   LIDC-IDRI-0310: reader_3 SEG done
+[13:19:27]   staged: LIDC-IDRI-0310
+[13:19:27] Downloading IDC series 1.3.6.1.4.1.14519.5.2.1.6279.6001.236452051640243530449001532111 ...
+2026-08-05 13:19:27,203 - Disk size needed: 54.21 MB
+2026-08-05 13:19:27,203 - Disk size available: 199.51 GB
+2026-08-05 13:19:27,295 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:30,796 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0351/ct
+[13:19:30]   LIDC-IDRI-0351: CT done (103 files)
+[13:19:30] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.21598.1553304577.771113 ...
+2026-08-05 13:19:30,923 - Disk size needed: 0.07 bytes
+2026-08-05 13:19:30,923 - Disk size available: 199.46 GB
+2026-08-05 13:19:31,075 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:33,078 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0351/seg/reader_0
+[13:19:33]   LIDC-IDRI-0351: reader_0 SEG done
+[13:19:33] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.21600.1553304580.157206 ...
+2026-08-05 13:19:33,106 - Disk size needed: 0.1 bytes
+2026-08-05 13:19:33,106 - Disk size available: 199.46 GB
+2026-08-05 13:19:33,198 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:35,200 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0351/seg/reader_1
+[13:19:35]   LIDC-IDRI-0351: reader_1 SEG done
+[13:19:35] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.21602.1553304582.551762 ...
+2026-08-05 13:19:35,229 - Disk size needed: 0.1 bytes
+2026-08-05 13:19:35,229 - Disk size available: 199.46 GB
+2026-08-05 13:19:35,332 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:37,335 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0351/seg/reader_2
+[13:19:37]   LIDC-IDRI-0351: reader_2 SEG done
+[13:19:37] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.21604.1553304584.949324 ...
+2026-08-05 13:19:37,365 - Disk size needed: 0.1 bytes
+2026-08-05 13:19:37,365 - Disk size available: 199.46 GB
+2026-08-05 13:19:37,462 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:39,463 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0351/seg/reader_3
+[13:19:39]   LIDC-IDRI-0351: reader_3 SEG done
+[13:19:39]   staged: LIDC-IDRI-0351
+[13:19:39] Downloading IDC series 1.3.6.1.4.1.14519.5.2.1.6279.6001.118924792893665851774878880764 ...
+2026-08-05 13:19:39,493 - Disk size needed: 61.03 MB
+2026-08-05 13:19:39,493 - Disk size available: 199.46 GB
+2026-08-05 13:19:39,592 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:43,094 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0426/ct
+[13:19:43]   LIDC-IDRI-0426: CT done (116 files)
+[13:19:43] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.26874.1553310151.952638 ...
+2026-08-05 13:19:43,207 - Disk size needed: 0.14 bytes
+2026-08-05 13:19:43,207 - Disk size available: 199.4 GB
+2026-08-05 13:19:43,380 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:45,383 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0426/seg/reader_0
+[13:19:45]   LIDC-IDRI-0426: reader_0 SEG done
+[13:19:45] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.26876.1553310154.464623 ...
+2026-08-05 13:19:45,412 - Disk size needed: 0.14 bytes
+2026-08-05 13:19:45,412 - Disk size available: 199.4 GB
+2026-08-05 13:19:45,507 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:47,508 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0426/seg/reader_1
+[13:19:47]   LIDC-IDRI-0426: reader_1 SEG done
+[13:19:47] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.26878.1553310157.185449 ...
+2026-08-05 13:19:47,537 - Disk size needed: 0.14 bytes
+2026-08-05 13:19:47,537 - Disk size available: 199.4 GB
+2026-08-05 13:19:47,634 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:49,636 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0426/seg/reader_2
+[13:19:49]   LIDC-IDRI-0426: reader_2 SEG done
+[13:19:49] Downloading IDC series 1.2.276.0.7230010.3.1.3.0.26880.1553310159.912354 ...
+2026-08-05 13:19:49,664 - Disk size needed: 0.14 bytes
+2026-08-05 13:19:49,664 - Disk size available: 199.4 GB
+2026-08-05 13:19:49,761 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested
+2026-08-05 13:19:52,263 - Successfully downloaded files to /content/monai_scratch/lidc_batch/LIDC-IDRI-0426/seg/reader_3
+[13:19:52]   LIDC-IDRI-0426: reader_3 SEG done
+[13:19:52]   staged: LIDC-IDRI-0426
+[13:19:52] Downloading IDC series 1.3.6.1.4.1.14519.5.2.1.6279.6001.140642535005388188316143069436 ...
+2026-08-05 13:19:52,293 - Disk size needed: 55.24 MB
+2026-08-05 13:19:52,293 - Disk size available: 199.4 GB
+2026-08-05 13:19:52,399 - Not using s5cmd sync as the destination folder is empty or sync or progress bar is not requested

@@ -97,6 +97,21 @@ class ExpertExecutionResponse(BaseModel):
     error: str | None
 
 
+class SegmentBoxRequest(BaseModel):
+    """One on-demand interactive-segmentation request: a single 2D slice + a box drawn
+    around the structure of interest. Not tied to any `Analysis` row — this is stateless
+    per-call, the viewer owns accept/reject of the returned mask."""
+
+    sop_instance_uid: str
+    box_xyxy: tuple[float, float, float, float]
+
+
+class SegmentBoxResponse(BaseModel):
+    sop_instance_uid: str
+    mask_rle: dict
+    model_version: str
+
+
 class AnalysisResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

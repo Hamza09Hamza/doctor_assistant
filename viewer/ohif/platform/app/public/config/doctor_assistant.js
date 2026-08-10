@@ -93,7 +93,11 @@ window.config = {
   // origin (OHIF_ORIGIN, default http://localhost:3000) since these are plain
   // fetch() calls to a different backend, not a DICOMweb dataSource the dev
   // server's proxy covers.
-  doctorAssistantApiBaseUrl: 'http://localhost:8000',
+  // Relative + same-origin, proxied by the dev server to DOCTOR_ASSISTANT_API_TARGET
+  // (see .webpack/webpack.pwa.js and the dev:doctor-assistant script) -- this is what
+  // lets the findings panel work in a remote/sandboxed dev environment where only
+  // OHIF_PORT is reachable from the browser, not the API's own port directly.
+  doctorAssistantApiBaseUrl: '/doctor-assistant-api',
 
   // The real product path is now Orthanc. The public OHIF source remains below
   // as a manual preview fallback, but must never be confused with locally

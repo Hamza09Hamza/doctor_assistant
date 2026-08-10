@@ -2,6 +2,10 @@ import i18n from '@ohif/i18n';
 import { id } from './id';
 import getPanelModule from './getPanelModule';
 import getCustomizationModule from './getCustomizationModule';
+import { findSeriesByDicomUid } from './apiClient';
+import registerMedSAMBoxTool from './tools/registerMedSAMBoxTool';
+
+let unregisterMedSAMBoxTool: (() => void) | undefined;
 
 /**
  * Candidate-findings panel for doctor_assistant. Talks to the API (see
@@ -44,6 +48,25 @@ const doctorAssistantExtension = {
   },
   getPanelModule,
   getCustomizationModule,
+  // Registers the MedSAMBoxTool (draw-a-box interactive segmentation, see
+  // tools/registerMedSAMBoxTool.ts) and its annotation-completed handler. Re-entering
+  // the mode re-registers idempotently (addTool/toolGroup.addTool both guard against
+  // duplicates internally); the previous listener is torn down first regardless.
+  onModeEnter: ({ servicesManager }: withAppTypes): void => {
+    unregisterMedSAMBoxTool?.();
+    const { unsubscribe } = registerMedSAMBoxTool({
+      servicesManager,
+      seriesIdForSeriesUid: async (seriesInstanceUid: string) => {
+        const series = await findSeriesByDicomUid(seriesInstanceUid);
+        return series.id;
+      },
+    });
+    unregisterMedSAMBoxTool = unsubscribe;
+  },
+  onModeExit: (): void => {
+    unregisterMedSAMBoxTool?.();
+    unregisterMedSAMBoxTool = undefined;
+  },
 };
 
 export default doctorAssistantExtension;

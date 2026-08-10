@@ -86,6 +86,19 @@ def _build_total_segmentator() -> object:
     return TotalSegmentatorExpert(body_part=BodyPart.ABDOMEN)
 
 
+def _build_brats() -> object | None:
+    from experts.mri_brats import BraTSExpert
+
+    bundle_root = os.environ.get("BRATS_BUNDLE_ROOT")
+    if not bundle_root:
+        logger.info(
+            "api.registry: BraTS skipped -- set BRATS_BUNDLE_ROOT to a directory the "
+            "brats_mri_segmentation bundle can be downloaded into/read from to enable it."
+        )
+        return None
+    return BraTSExpert(bundle_root=bundle_root)
+
+
 def build_default_registry() -> ExpertRegistry:
     registry = ExpertRegistry()
     _try_register(registry, "KAD-512", _build_kad)
@@ -93,4 +106,5 @@ def build_default_registry() -> ExpertRegistry:
     _try_register(registry, "MAIRA-2", _build_maira2)
     _try_register(registry, "MSK fracture detector", _build_msk_fracture)
     _try_register(registry, "TotalSegmentator", _build_total_segmentator)
+    _try_register(registry, "BraTS", _build_brats)
     return registry

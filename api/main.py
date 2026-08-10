@@ -9,6 +9,7 @@ production state — global module-level app/engine objects would make that impo
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -23,10 +24,40 @@ from .db import Base, build_engine, build_session_factory
 from .orthanc_client import OrthancConfig
 from .registry import build_default_registry
 from .routes.analyses import router as analyses_router
+from .routes.segmentation import router as segmentation_router
 from .routes.series import router as series_router
 from .routes.studies import router as studies_router
 
 logger = logging.getLogger(__name__)
+
+
+def _build_medsam(*, checkpoint_path: str | None, model_id: str | None):
+    """Env-var-gated, failure-isolated the same way `api/registry.py::_try_register`
+    handles every expert — a missing/misconfigured checkpoint must not stop the API
+    from serving everything else.
+
+    `checkpoint_path` (MEDSAM_CHECKPOINT_PATH) takes precedence when set — a local
+    directory with a `transformers`-format checkpoint (config.json/pytorch_model.bin),
+    for a fully offline deployment. `model_id` (MEDSAM_MODEL_ID) is the Hub fallback —
+    `transformers` downloads/caches it on first real use, not at startup. Both being
+    unset means the feature stays off by default, matching every other expert here.
+    """
+    if not checkpoint_path and not model_id:
+        logger.info(
+            "api.main: interactive segmentation skipped — set MEDSAM_CHECKPOINT_PATH "
+            "(local dir) or MEDSAM_MODEL_ID (HF Hub id) to enable "
+            "POST /v1/series/{id}/segment-box."
+        )
+        return None
+    from experts.medsam_interactive import MedSAMBoxSegmenter
+
+    try:
+        if checkpoint_path:
+            return MedSAMBoxSegmenter(checkpoint_path=checkpoint_path)
+        return MedSAMBoxSegmenter(model_id=model_id)
+    except Exception as exc:  # noqa: BLE001 — isolate from the rest of app startup
+        logger.warning("api.main: MedSAM unavailable (%s: %s)", type(exc).__name__, exc)
+        return None
 
 
 def create_app(
@@ -36,6 +67,7 @@ def create_app(
     registry: ExpertRegistry | None = None,
     orthanc_config: OrthancConfig | None = None,
     ohif_origin: str | None = None,
+    medsam=None,
 ) -> FastAPI:
     settings = get_settings()
     resolved_database_url = database_url or settings.database_url
@@ -61,6 +93,17 @@ def create_app(
     # api/registry.py) — allow a caller (tests, or a future multi-process deployment)
     # to inject one instead of paying that cost, or to inject a fake for testing.
     app.state.registry = registry if registry is not None else build_default_registry()
+    # Mirrors `registry` above: a caller (tests) can inject a fake `medsam` segmenter
+    # directly instead of paying for a real checkpoint load, or to exercise the 404/503
+    # paths deterministically.
+    app.state.medsam = (
+        medsam
+        if medsam is not None
+        else _build_medsam(
+            checkpoint_path=os.environ.get("MEDSAM_CHECKPOINT_PATH"),
+            model_id=os.environ.get("MEDSAM_MODEL_ID"),
+        )
+    )
 
     # The OHIF findings panel (viewer/ohif/extensions/extension-doctor-assistant)
     # calls this API cross-origin from OHIF's own dev server — scoped to one
@@ -89,6 +132,7 @@ def create_app(
     app.include_router(studies_router)
     app.include_router(analyses_router)
     app.include_router(series_router)
+    app.include_router(segmentation_router)
     return app
 
 
