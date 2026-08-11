@@ -18,15 +18,63 @@ and the ngrok URL exists only while its notebook session is running.
 
 ## 1. Start local DICOM services
 
-Docker Desktop must be running:
+### Native macOS (no Docker)
+
+Install the official universal Orthanc package once, then start it in a dedicated
+terminal:
+
+```bash
+bash scripts/install_orthanc_macos.sh
+bash scripts/start_orthanc_macos.sh
+```
+
+The download is about 320 MB. The server itself is lightweight and does not load any
+AI model. The installer keeps the package and Orthanc database under the ignored
+`data/` directory. Leave the second command running while testing.
+
+If the official download server's certificate is rejected by command-line `curl`,
+download `Orthanc-macOS-26.4.2.zip` from the
+[official macOS package index](https://orthanc.uclouvain.be/downloads/macos/packages/universal/)
+in the browser and rerun the installer. It automatically uses the file in `Downloads`.
+
+If a network filter blocks the Orthanc domain entirely, interrupt only the Colab
+monitoring cell and run this temporary cell. The API process stays alive:
+
+```python
+from google.colab import files
+import requests
+
+url = "https://orthanc.uclouvain.be/downloads/macos/packages/universal/Orthanc-macOS-26.4.2.zip"
+path = "/content/Orthanc-macOS-26.4.2.zip"
+with requests.get(url, stream=True, timeout=120) as response:
+    response.raise_for_status()
+    with open(path, "wb") as output:
+        for chunk in response.iter_content(1024 * 1024):
+            output.write(chunk)
+files.download(path)
+```
+
+After the browser finishes saving it to `Downloads`, rerun
+`bash scripts/install_orthanc_macos.sh`. The installer detects the ZIP there.
+
+In another terminal, upload the already prepared LIDC study:
+
+```bash
+source .venv-mlx/bin/activate
+python scripts/prepare_lidc_interactive_demo.py --upload-orthanc
+```
+
+The upload command prints the LIDC study URL. No local model inference is performed.
+
+### Docker alternative
+
+If Docker Desktop is installed, the original route remains available:
 
 ```bash
 docker compose -f deployments/docker-compose.yml up -d orthanc
 source .venv-mlx/bin/activate
 python scripts/prepare_lidc_interactive_demo.py --upload-orthanc
 ```
-
-The upload command prints the LIDC study URL. No local model inference is performed.
 
 ## 2. Start Colab
 

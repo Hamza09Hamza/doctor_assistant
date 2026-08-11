@@ -28,6 +28,10 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertIn("major >= 8", code)
         self.assertIn("SAM2_BUILD_CUDA='0'", code)
         self.assertIn("api.colab_server:create_app", code)
+        self.assertIn("DOWNLOAD_ORTHANC_MACOS = True", code)
+        self.assertIn("Orthanc-macOS-26.4.2.zip", code)
+        self.assertIn("files.download(str(orthanc_zip))", code)
+        self.assertIn("orthanc_zip.stat().st_size > 300 * 1024**2", code)
 
 
 if __name__ == "__main__":

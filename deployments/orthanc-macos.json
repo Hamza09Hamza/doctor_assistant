@@ -1,0 +1,18 @@
+{
+  "Name": "doctor_assistant-orthanc",
+  "StorageDirectory": "${DOCTOR_ASSISTANT_ORTHANC_STORAGE}",
+  "Plugins": ["${DOCTOR_ASSISTANT_ORTHANC_PLUGINS}"],
+  "HttpPort": 8042,
+  "DicomPort": 4242,
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": true,
+  "RegisteredUsers": {
+    "doctor_assistant": "doctor_assistant"
+  },
+  "DicomWeb": {
+    "Enable": true,
+    "Root": "/dicom-web/",
+    "EnableWado": true,
+    "WadoRoot": "/wado"
+  }
+}
