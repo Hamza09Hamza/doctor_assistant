@@ -7,10 +7,15 @@ here is additive around the existing engine — no changes to `pipeline.py` itse
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
+import pydicom
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from core.enums import BodyPart, Modality
+from core.types import Scan, ScanMetadata
+from experts.mri_brats import BUNDLE_MODALITY_ORDER, canonical_sequence_name
 from pipeline import Pipeline
 from routing import ExpertRegistry, ModalityRouter
 
@@ -59,6 +64,137 @@ def create_queued_analysis(db: Session, *, study_id: str, series_id: str | None 
     return analysis
 
 
+def _representative_dicom_file(storage_dir: str) -> Path | None:
+    """The first file in a series directory, standing in for the whole series --
+    `SeriesDescription` (like `ViewPosition`/`BodyPartExamined` in dicom_ingest.py's
+    `_read_instance_header`) is expected constant across a series' instances."""
+    directory = Path(storage_dir)
+    if not directory.is_dir():
+        return None
+    for candidate in sorted(directory.iterdir()):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _series_description(storage_dir: str) -> str | None:
+    """Read the DICOM SeriesDescription tag from one representative file in a series
+    directory -- the only place a sequence's clinical name (T1c/T1/T2/FLAIR, or a
+    scout/localizer that isn't part of the 4-sequence BraTS protocol) is recorded.
+    `Series` (api/models.py) has no dedicated column for it: deriving it here, read-time,
+    from a file already downloaded to disk is just as correct as capturing it at ingest
+    and needs no migration -- unlike `Series.modality`/`body_part`, which ARE captured at
+    ingest because that mapping is a lookup table over the DICOM Modality/BodyPartExamined
+    tags needed for *every* series (routing depends on it), not a single string comparison
+    used only when grouping one modality's multi-sequence studies.
+    """
+    representative = _representative_dicom_file(storage_dir)
+    if representative is None:
+        return None
+    dataset = pydicom.dcmread(str(representative), stop_before_pixels=True)
+    return getattr(dataset, "SeriesDescription", None) or None
+
+
+def _match_brats_sequences(db: Session, study_id: str) -> dict[str, str] | None:
+    """Group a study's `Series` rows into the four co-registered sequences
+    `brats_mri_segmentation` needs (t1c/t1/t2/flair), or return None if not all four
+    are present -- the caller falls back to the study's ordinary single-path analysis
+    (which fails closed with "no analyzable storage path" for a multi-series study that
+    has no single-file `storage_path`, same as before this function existed).
+
+    Matches on each `Series`' own modality/body_part rather than the parent `Study`'s:
+    a DICOM study imported from Orthanc always stamps `Study.modality`/`body_part`
+    UNKNOWN by design (a study can span several modalities/body parts -- see
+    api/dicom_ingest.py's own docstring on `import_study_from_orthanc`), so only the
+    per-series values (resolved once at ingest, see `Series.modality` in api/models.py)
+    are trustworthy here.
+
+    A brain MRI study legitimately contains series outside the 4-sequence protocol
+    (scouts, localizers, post-processing series) -- `canonical_sequence_name` raising on
+    those is expected and they're skipped, not treated as an error for the whole study.
+    """
+    candidates = (
+        db.execute(
+            select(Series).where(
+                Series.study_id == study_id,
+                Series.modality == Modality.MRI.value,
+                Series.body_part == BodyPart.BRAIN.value,
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    sequence_paths: dict[str, str] = {}
+    for series in candidates:
+        description = _series_description(series.storage_dir)
+        if not description:
+            logger.info(
+                "api.persistence: series %s has no SeriesDescription; skipped for "
+                "BraTS sequence matching",
+                series.id,
+            )
+            continue
+        try:
+            canonical = canonical_sequence_name(description)
+        except ValueError:
+            logger.info(
+                "api.persistence: series %s SeriesDescription %r is not a recognised "
+                "BraTS sequence name; skipped",
+                series.id,
+                description,
+            )
+            continue
+        if canonical in sequence_paths:
+            logger.warning(
+                "api.persistence: study %s has more than one series matching BraTS "
+                "sequence %r; keeping the first (series %s)",
+                study_id,
+                canonical,
+                sequence_paths[canonical],
+            )
+            continue
+        sequence_paths[canonical] = series.storage_dir
+
+    missing = [name for name in BUNDLE_MODALITY_ORDER if name not in sequence_paths]
+    if missing:
+        if sequence_paths:
+            logger.info(
+                "api.persistence: study %s has %d/%d BraTS sequences (missing %s); "
+                "not enough to run mri_brats",
+                study_id,
+                len(sequence_paths),
+                len(BUNDLE_MODALITY_ORDER),
+                missing,
+            )
+        return None
+    return sequence_paths
+
+
+def _build_brats_scan(study: Study, sequence_paths: dict[str, str]) -> Scan:
+    """A `Scan` for the multi-sequence BraTS path -- built directly rather than via
+    `ingest.loaders.load_scan` (which only ever reads one path into `Scan.data`).
+
+    `data` is a placeholder, deliberately: `BraTSExpert.predict()` reads exclusively
+    from `scan.meta.extra["sequence_paths"]` on disk (it needs four separate
+    co-registered volumes; one `Scan.data` tensor can't hold four, so there IS no single
+    real pixel array to put here), and its `findings_from_prediction` hook never touches
+    `scan.data` either. Confirmed nothing upstream of the expert needs it to be real
+    either: `ModalityRouter.route` (routing/router.py) keys purely on `scan.meta`, and
+    `Reporter.report`/`Verifier.verify` take `Finding`s and `scan.meta`, never `scan`
+    itself -- grepped reporting/*.py for `.data` and found no reference.
+    """
+    import torch
+
+    meta = ScanMetadata(
+        modality=Modality.MRI,
+        body_part=BodyPart.BRAIN,
+        source_path=study.storage_path,
+        extra={"sequence_paths": sequence_paths},
+    )
+    return Scan(data=torch.zeros((1, 1, 1, 1)), meta=meta)
+
+
 def run_analysis(session_factory: sessionmaker[Session], registry: ExpertRegistry, analysis_id: str) -> None:
     """The background job: run `Pipeline.analyze` and persist the outcome.
 
@@ -91,7 +227,23 @@ def run_analysis(session_factory: sessionmaker[Session], registry: ExpertRegistr
         path = series.storage_dir if series is not None else study.storage_path
         modality_value = series.modality if series is not None else study.modality
         body_part_value = series.body_part if series is not None else study.body_part
-        if path is None:
+
+        # A study-level submission (series is None) whose study has no single-file
+        # storage_path is a multi-series study -- currently always an Orthanc import
+        # (see api/models.py: storage_path is null exactly when source="orthanc"). That
+        # is the only shape that can supply BraTS's four co-registered MRI sequences, so
+        # it's the only case worth trying to group. Gating on the *study's* modality/
+        # body_part instead (mirroring the single-series branch below) would make this
+        # unreachable: Study.modality/body_part are always UNKNOWN for such studies by
+        # design (api/dicom_ingest.py) -- so this looks at each Series' own (reliable)
+        # modality/body_part via `_match_brats_sequences` instead.
+        brats_scan: Scan | None = None
+        if series is None and study.storage_path is None:
+            sequence_paths = _match_brats_sequences(db, study.id)
+            if sequence_paths is not None:
+                brats_scan = _build_brats_scan(study, sequence_paths)
+
+        if path is None and brats_scan is None:
             _mark_failed(db, analysis, "study/series has no analyzable storage path")
             return
 
@@ -100,11 +252,14 @@ def run_analysis(session_factory: sessionmaker[Session], registry: ExpertRegistr
 
         try:
             pipe = Pipeline(ModalityRouter(registry))
-            result = pipe.analyze(
-                path,
-                modality=Modality(modality_value),
-                body_part=BodyPart(body_part_value),
-            )
+            if brats_scan is not None:
+                result = pipe.analyze_scan(brats_scan)
+            else:
+                result = pipe.analyze(
+                    path,
+                    modality=Modality(modality_value),
+                    body_part=BodyPart(body_part_value),
+                )
         except Exception as exc:  # noqa: BLE001 — the whole analysis failed, not one expert
             _mark_failed(db, analysis, f"{type(exc).__name__}: {exc}")
             return

@@ -15,9 +15,23 @@ four co-registered MRI sequences -- T1c, T1, T2, FLAIR, in that exact channel or
 own `configs/metadata.json` channel_def). A single `Scan.data` tensor cannot carry four
 separate volumes, so `predict()` reads them from `scan.meta.extra["sequence_paths"]`, a
 dict of on-disk paths keyed by sequence name (real spacing needed, same reasoning as
-TotalSegmentator's `source_path`). Nothing populates that key from the live API's upload
-path yet -- an ingestion task for whoever wires this end-to-end, out of scope here; this
-module raises loudly rather than guessing if it's missing.
+TotalSegmentator's `source_path`).
+
+`api/persistence.py::run_analysis` now populates that key for study-level submissions
+(`POST /v1/studies/{id}/analyses`) whose study has no single-file `storage_path` -- i.e. a
+multi-series (currently: Orthanc-imported) study -- by grouping the study's `Series` rows
+into the four canonical sequences via each series' own DICOM `SeriesDescription` tag (see
+`api/persistence.py::_match_brats_sequences`). Two things worth knowing if you're
+extending that path: (1) series-level submissions (`POST /v1/series/{id}/analyses`) still
+only ever resolve one path, so they can never supply four sequences -- this expert is
+unreachable from that endpoint by construction, not an oversight; (2) each path handed
+into `sequence_paths` is a raw DICOM series directory, not a converted NIfTI file --
+verified empirically that MONAI's `LoadImaged` reads a directory of same-series DICOM
+instances directly (stacks correctly into a multi-channel volume), so no DICOM->NIfTI
+conversion step was added. Because of that, spacing below is read from the *loaded*
+image's own affine rather than via a second `nibabel.load()` of the reference path --
+`nibabel` cannot open a DICOM directory at all, only a NIfTI file, so a spacing helper
+that assumed NIfTI would silently break on this path.
 
 TC/WT/ET are non-exclusive nested subregions (ET is inside TC is inside WT), not a single
 argmax label map, so `Prediction.segmentation` holds three stacked boolean planes rather
@@ -61,6 +75,25 @@ _MODALITY_ALIASES = {
     "t1gd": "t1c",
     "t2": "t2",
     "t2w": "t2",
+    # Real clinical PACS `SeriesDescription` strings, verified with pydicom against
+    # actual downloaded DICOM instances (not just index metadata) from UPENN-GBM-00020
+    # (NCI Imaging Data Commons, collection `upenn_gbm`, CC BY 4.0) -- the DICOM-native
+    # 4-sequence brain-tumour MRI case staged for this bundle's first real end-to-end
+    # test; see docs/BRATS_TEST_CASE.md. As-shipped, `_MODALITY_ALIASES` matched none of
+    # a real study's four series: no IDC brain-MRI collection surveyed (upenn_gbm,
+    # icdc_glioma; tcga_gbm/tcga_lgg have no DICOM MR at all in IDC) uses the bare
+    # canonical names above -- real scanners/post-processing pipelines stamp
+    # protocol-specific strings instead. Kept as literal, collection-specific full
+    # strings (including the "Processed_CaPTk" post-processing suffix) rather than
+    # generalizing the parser (e.g. stripping known suffixes or fuzzy-matching
+    # "axial"/"stealth" tokens): the same reasoning that keeps canonical_sequence_name
+    # exact-match-only above applies here -- a fuzzy parser risks exactly the kind of
+    # silent t1/t1gd-style misclassification this function was written to prevent, just
+    # with a different pair of strings.
+    "t1axial:processedcaptk": "t1",
+    "t1axialstealthpost:processedcaptk": "t1c",
+    "axialt2tse:processedcaptk": "t2",
+    "t2flairaxial:processedcaptk": "flair",
 }
 
 
@@ -210,7 +243,12 @@ class BraTSExpert:
             ]
         )
         data = transform({"image": ordered_paths})
-        image = data["image"].unsqueeze(0).to(device)
+        loaded = data["image"]
+        # Real spacing off the volume MONAI actually loaded, not a second read of
+        # ordered_paths[0] -- that path may be a raw DICOM series directory (see the
+        # module docstring), which `nibabel` cannot open at all.
+        spacing = self._spacing_from_affine(getattr(loaded, "affine", None), loaded.ndim - 1)
+        image = loaded.unsqueeze(0).to(device)
 
         with torch.no_grad():
             logits = sliding_window_inference(
@@ -221,8 +259,6 @@ class BraTSExpert:
                 overlap=0.5,
             )
             masks = (torch.sigmoid(logits) > 0.5)[0].cpu().numpy().astype(bool)
-
-        spacing = self._spacing_from_reference(ordered_paths[0])
 
         pred = Prediction(expert=self.name, meta=scan.meta)
         pred.segmentation = torch.as_tensor(masks)
@@ -304,8 +340,20 @@ class BraTSExpert:
         return self._network
 
     @staticmethod
-    def _spacing_from_reference(reference_path: str) -> tuple[float, ...]:
-        import nibabel as nib
+    def _spacing_from_affine(affine, spatial_dims: int) -> tuple[float, ...] | None:
+        """Physical voxel sizes from the norms of an affine's spatial basis vectors.
 
-        img = nib.load(reference_path)
-        return tuple(float(z) for z in img.header.get_zooms()[:3])
+        Mirrors `ingest.loaders._spacing_from_affine` exactly (the diagonal shortcut is
+        wrong for rotated volumes) -- duplicated rather than imported so this module
+        doesn't need `ingest.loaders` for one three-line helper. Returns None only if
+        the loader genuinely produced no affine (never fakes physical units).
+        """
+        import torch
+
+        if affine is None:
+            return None
+        matrix = torch.as_tensor(affine, dtype=torch.float64)
+        n_spatial = min(spatial_dims, 3, matrix.shape[1] - 1)
+        return tuple(
+            float(torch.linalg.vector_norm(matrix[:3, i])) for i in range(n_spatial)
+        )

@@ -99,6 +99,20 @@ def _build_brats() -> object | None:
     return BraTSExpert(bundle_root=bundle_root)
 
 
+def _build_lung_nodule() -> object | None:
+    from experts.ct_lung_nodule import LungNoduleDetectorExpert
+
+    bundle_root = os.environ.get("LUNG_NODULE_BUNDLE_ROOT")
+    if not bundle_root:
+        logger.info(
+            "api.registry: lung nodule detector skipped -- set LUNG_NODULE_BUNDLE_ROOT "
+            "to a directory the lung_nodule_ct_detection bundle can be downloaded "
+            "into/read from to enable it."
+        )
+        return None
+    return LungNoduleDetectorExpert(bundle_root=bundle_root)
+
+
 def build_default_registry() -> ExpertRegistry:
     registry = ExpertRegistry()
     _try_register(registry, "KAD-512", _build_kad)
@@ -107,4 +121,5 @@ def build_default_registry() -> ExpertRegistry:
     _try_register(registry, "MSK fracture detector", _build_msk_fracture)
     _try_register(registry, "TotalSegmentator", _build_total_segmentator)
     _try_register(registry, "BraTS", _build_brats)
+    _try_register(registry, "Lung nodule detector", _build_lung_nodule)
     return registry
