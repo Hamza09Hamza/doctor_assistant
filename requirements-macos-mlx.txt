@@ -1,0 +1,8 @@
+# Apple-Silicon local runtime for the full-volume interactive segmentation path.
+# mlx-sam currently requires Python 3.14.
+-r requirements.txt
+-r requirements-api.txt
+# Exact version used by the native-Metal and API-to-DICOM-SEG validation.
+mlx-sam==0.3.0
+# Official Imaging Data Commons client used by the reproducible LIDC demo downloader.
+idc-index==0.12.5

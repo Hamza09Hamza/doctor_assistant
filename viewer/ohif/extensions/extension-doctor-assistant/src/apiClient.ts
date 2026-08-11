@@ -21,6 +21,16 @@ function getApiBaseUrl(): string {
 
 export class NotFoundError extends Error {}
 
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${getApiBaseUrl()}${path}`, init);
   if (response.status === 404) {
@@ -28,7 +38,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`doctor_assistant API ${path} -> ${response.status}: ${body}`);
+    throw new ApiError(response.status, `doctor_assistant API ${path} -> ${response.status}: ${body}`);
   }
   return response.json();
 }
@@ -113,5 +123,48 @@ export function segmentBox(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sop_instance_uid: sopInstanceUid, box_xyxy: boxXyxy }),
+  });
+}
+
+export interface SegmentVolumeSlice {
+  sop_instance_uid: string;
+  mask_rle: { size: [number, number]; counts: number[] };
+}
+
+export interface SegmentVolumeResult {
+  seed_sop_instance_uid: string;
+  masks: SegmentVolumeSlice[];
+  source_slice_count: number;
+  segmented_slice_count: number;
+  voxel_count: number;
+  volume_ml: number;
+  axial_bbox_diagonal_mm: number;
+  model_version: string;
+  dicom_seg_series_instance_uid: string;
+  dicom_seg_sop_instance_uid: string;
+  orthanc_status: 'published' | 'disabled' | 'failed';
+  warning: string | null;
+}
+
+/** Propagate a box through the complete DICOM stack and persist a DICOM SEG. */
+export function segmentVolume(
+  seriesId: string,
+  sopInstanceUid: string,
+  boxXyxy: [number, number, number, number],
+  voi?: { windowCenter: number; windowWidth: number }
+): Promise<SegmentVolumeResult> {
+  return apiFetch(`/v1/series/${seriesId}/segment-volume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sop_instance_uid: sopInstanceUid,
+      box_xyxy: boxXyxy,
+      // Backend-neutral on purpose: the server may use native SAM2 MLX, a converted
+      // MedSAM2 checkpoint, or the official CUDA MedSAM2 runtime.
+      segment_label: 'AI prompted lesion',
+      publish_to_orthanc: true,
+      window_center: voi?.windowCenter,
+      window_width: voi?.windowWidth,
+    }),
   });
 }

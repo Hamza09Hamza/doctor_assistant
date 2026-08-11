@@ -14,3 +14,5 @@ sqlalchemy>=2.0
 psycopg2-binary>=2.9
 python-multipart>=0.0.9
 httpx>=0.27
+# Standards-valid interactive 3D results (MedSAM2 mask -> DICOM SEG for Orthanc/OHIF).
+highdicom==0.27.0

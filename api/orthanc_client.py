@@ -97,3 +97,16 @@ class OrthancClient:
         response = self._client.get(f"/instances/{orthanc_instance_id}/file")
         response.raise_for_status()
         return response.content
+
+    def upload_instance(self, dicom_bytes: bytes) -> dict:
+        """Store one DICOM object (for example an AI-produced SEG) in Orthanc."""
+        response = self._client.post(
+            "/instances",
+            content=dicom_bytes,
+            headers={"Content-Type": "application/dicom"},
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise OrthancError("Orthanc instance upload returned a non-object response")
+        return payload

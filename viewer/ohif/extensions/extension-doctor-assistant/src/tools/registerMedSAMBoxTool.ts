@@ -1,7 +1,7 @@
 import { cache, eventTarget, metaData, utilities as csUtils } from '@cornerstonejs/core';
 import * as cornerstoneTools from '@cornerstonejs/tools';
 
-import { segmentBox } from '../apiClient';
+import { ApiError, segmentBox, segmentVolume, type SegmentVolumeSlice } from '../apiClient';
 import { decodeMaskRle } from '../segmentBoxRle';
 import { MedSAMBoxTool } from './MedSAMBoxTool';
 
@@ -159,66 +159,106 @@ export function registerMedSAMBoxTool({ servicesManager, seriesIdForSeriesUid }:
       ];
 
       const seriesId = await seriesIdForSeriesUid(seriesInstanceUid);
-      const result = await segmentBox(seriesId, sopInstanceUid, boxXyxy);
-      const mask = decodeMaskRle(result.mask_rle);
-      const [maskHeight, maskWidth] = result.mask_rle.size;
+      let masks: SegmentVolumeSlice[];
+      let resultLabel = 'MedSAM2 3D prompted segmentation';
+      let successMessage: string;
+      try {
+        const voiRange = viewport.getProperties?.().voiRange;
+        const voi =
+          voiRange && Number.isFinite(voiRange.lower) && Number.isFinite(voiRange.upper)
+            ? {
+                windowCenter: (voiRange.lower + voiRange.upper) / 2,
+                windowWidth: voiRange.upper - voiRange.lower,
+              }
+            : undefined;
+        const volumeResult = await segmentVolume(seriesId, sopInstanceUid, boxXyxy, voi);
+        resultLabel = volumeResult.model_version.startsWith('sam2-mlx:')
+          ? 'SAM2 MLX 3D prompted segmentation'
+          : 'MedSAM2 3D prompted segmentation';
+        masks = volumeResult.masks;
+        const persistence =
+          volumeResult.orthanc_status === 'published'
+            ? 'DICOM SEG saved to Orthanc.'
+            : volumeResult.orthanc_status === 'failed'
+              ? 'DICOM SEG created locally; Orthanc upload failed.'
+              : 'DICOM SEG created locally.';
+        successMessage =
+          `${volumeResult.segmented_slice_count} slices · ` +
+          `${volumeResult.volume_ml.toFixed(2)} mL · ` +
+          `${volumeResult.axial_bbox_diagonal_mm.toFixed(1)} mm axial span. ${persistence}`;
+      } catch (error) {
+        // Keep the already-working 2D path available on machines where the larger
+        // MedSAM2 runtime/checkpoint has not yet been installed. Only a capability
+        // failure falls back; bad geometry/model errors must remain visible.
+        if (!(error instanceof ApiError) || error.status !== 503) {
+          throw error;
+        }
+        const sliceResult = await segmentBox(seriesId, sopInstanceUid, boxXyxy);
+        masks = [
+          {
+            sop_instance_uid: sliceResult.sop_instance_uid,
+            mask_rle: sliceResult.mask_rle,
+          },
+        ];
+        resultLabel = 'MedSAM 2D box segmentation';
+        successMessage = 'MedSAM2 is not configured, so this result covers the selected slice only.';
+      }
 
       const segmentationId = await createLabelmapSegmentationForViewport(
         servicesManager,
         viewport.id,
-        'MedSAM box segmentation'
+        resultLabel
       );
       if (!segmentationId) {
         throw new Error('could not create a labelmap segmentation for this viewport');
       }
-      // `getLabelmapVolume` only resolves for a *volume*-backed labelmap
-      // (representationData.Labelmap.volumeId set) -- our MRI/PET series render in a
-      // plain 2D StackViewport, whose labelmap has no volumeId at all (it's a per-image
-      // "stack" labelmap instead: cornerstoneTools' own LabelmapSegmentationDataStack
-      // shape). Every built-in segmentation tool (RectangleScissorsTool, PaintFillTool,
-      // BrushTool -- see getStrategyData.js's getStrategyDataForStackViewport) branches
-      // on exactly this distinction, which is what this does too, rather than assuming
-      // volume-backed like the first version of this function did (that assumption is
-      // exactly what produced "labelmap segmentation was created but has no backing
-      // volume" against a real stack viewport).
-      const [iMin, jMin, iMax, jMax] = boxXyxy;
       const segmentIndex = 1;
-      const labelmapVolume = segmentationService.getLabelmapVolume(segmentationId);
-      if (labelmapVolume) {
-        const kIndex = indices[0][2];
-        for (let row = Math.max(0, Math.floor(jMin)); row < Math.min(maskHeight, Math.ceil(jMax)); row++) {
-          for (let col = Math.max(0, Math.floor(iMin)); col < Math.min(maskWidth, Math.ceil(iMax)); col++) {
-            if (mask[row + col * maskHeight]) {
-              labelmapVolume.voxelManager.setAtIJK(col, row, kIndex, segmentIndex);
-            }
-          }
-        }
-        labelmapVolume.modified?.();
-      } else {
-        const labelmapImageIds = cornerstoneTools.segmentation.getCurrentLabelmapImageIdsForViewport(
-          viewport.id,
-          segmentationId
+      const referencedImageIds: string[] = viewport.getImageIds?.() || [];
+      const labelmapImageIds = cornerstoneTools.segmentation.getLabelmapImageIds(segmentationId);
+      if (!referencedImageIds.length || labelmapImageIds.length !== referencedImageIds.length) {
+        throw new Error(
+          `segmentation/source stack mismatch (${labelmapImageIds.length} labelmaps for ` +
+            `${referencedImageIds.length} source images)`
         );
-        const labelmapImage = labelmapImageIds?.[0] ? cache.getImage(labelmapImageIds[0]) : undefined;
-        if (!labelmapImage?.voxelManager) {
-          throw new Error(
-            'labelmap segmentation was created but has neither a backing volume nor a ' +
-              'per-image stack labelmap for this viewport'
-          );
+      }
+
+      // Pair source and derived image IDs by the order used when
+      // createLabelmapForDisplaySet created the labelmaps, then identify each source
+      // slice by SOP UID. This remains correct whether OHIF displays the stack head to
+      // foot or foot to head; no inferred k-direction is involved.
+      const labelmapBySopUid = new Map<string, string>();
+      referencedImageIds.forEach((sourceImageId, index) => {
+        const sourceInstance = metaData.get('instance', sourceImageId);
+        const sourceSopUid = sourceInstance?.SOPInstanceUID || sourceInstance?.SopInstanceUID;
+        if (sourceSopUid) {
+          labelmapBySopUid.set(sourceSopUid, labelmapImageIds[index]);
         }
-        for (let row = Math.max(0, Math.floor(jMin)); row < Math.min(maskHeight, Math.ceil(jMax)); row++) {
-          for (let col = Math.max(0, Math.floor(iMin)); col < Math.min(maskWidth, Math.ceil(iMax)); col++) {
-            if (mask[row + col * maskHeight]) {
-              // A stack labelmap image is a single 2D slice -- k is always 0, unlike
-              // the volume case above where k picks the slice out of a 3D volume.
+      });
+
+      for (const slice of masks) {
+        const labelmapImageId = labelmapBySopUid.get(slice.sop_instance_uid);
+        const labelmapImage = labelmapImageId ? cache.getImage(labelmapImageId) : undefined;
+        if (!labelmapImage?.voxelManager) {
+          throw new Error(`no labelmap image for segmented SOP ${slice.sop_instance_uid}`);
+        }
+        const flatMask = decodeMaskRle(slice.mask_rle);
+        const [maskHeight, maskWidth] = slice.mask_rle.size;
+        for (let col = 0; col < maskWidth; col++) {
+          for (let row = 0; row < maskHeight; row++) {
+            if (flatMask[row + col * maskHeight]) {
               labelmapImage.voxelManager.setAtIJK(col, row, 0, segmentIndex);
             }
           }
         }
-        cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(
-          segmentationId
-        );
       }
+      cornerstoneTools.segmentation.triggerSegmentationEvents.triggerSegmentationDataModified(
+        segmentationId
+      );
+      uiNotificationService?.show({
+        title: resultLabel,
+        message: successMessage,
+        type: masks.length > 1 ? 'success' : 'warning',
+      });
     } catch (error) {
       console.error('MedSAMBoxTool: segmentation failed', error);
       uiNotificationService?.show({

@@ -12,6 +12,8 @@ and uses the first match. Add a format by writing a new Loader and registering i
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 
 import numpy as np
 import torch
@@ -81,7 +83,12 @@ class VolumeLoader:
         from monai.transforms import LoadImage
 
         reader = LoadImage(image_only=True, ensure_channel_first=True)
-        tensor = reader(path)  # MetaTensor, channels-first
+        flat_dir = self._flatten_dicom_dir(path) if os.path.isdir(path) else None
+        try:
+            tensor = reader(flat_dir or path)  # MetaTensor, channels-first
+        finally:
+            if flat_dir is not None:
+                shutil.rmtree(flat_dir, ignore_errors=True)
 
         data = torch.as_tensor(tensor.as_tensor() if hasattr(tensor, "as_tensor") else tensor,
                                dtype=torch.float32)
@@ -100,6 +107,34 @@ class VolumeLoader:
             source_path=path,
         )
         return Scan(data=data, meta=meta)
+
+    @staticmethod
+    def _flatten_dicom_dir(path: str) -> str | None:
+        """Symlink a directory's direct-child *files* into a fresh scratch directory,
+        or return None if `path` already has no subdirectories to strip.
+
+        MONAI's `PydicomReader.read()` filters a series directory with
+        `pydicom.misc.is_dicom(slc)` for every `glob(path/*)` entry -- but `is_dicom`
+        unconditionally does `open(file_path, "rb")` with no `is_dir()` guard, so a
+        stray subdirectory (this project writes derived DICOM SEGs into
+        `<series_dir>/derived/`, see api/volume_segmentation.py) crashes the whole
+        series read with `IsADirectoryError` instead of being skipped. A plain file
+        list can't stand in for the directory here either -- verified empirically: it
+        makes MONAI treat every file as an independent single-slice image to be
+        channel-concatenated, which then fails on non-identical affines instead of
+        stacking them into one volume the way the directory code path does. Symlinking
+        preserves the exact "directory of a DICOM series" code path MONAI needs while
+        removing the one entry that breaks it.
+        """
+        entries = os.listdir(path)
+        if all(os.path.isfile(os.path.join(path, e)) for e in entries):
+            return None
+        flat_dir = tempfile.mkdtemp(prefix="volume_loader_flat_")
+        for entry in entries:
+            src = os.path.join(path, entry)
+            if os.path.isfile(src):
+                os.symlink(src, os.path.join(flat_dir, entry))
+        return flat_dir
 
 
 # Registered in priority order; the first loader that recognizes a path wins.

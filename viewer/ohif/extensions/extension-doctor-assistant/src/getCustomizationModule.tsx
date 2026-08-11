@@ -50,7 +50,7 @@ export default function getCustomizationModule() {
               props: {
                 type: 'tool',
                 icon: 'tool-rectangle',
-                label: 'Segment (draw a box)',
+                label: '3D Segment (draw box)',
                 // Mirrors extensions/cornerstone/src/customizations/toolbarButtonsCustomization.ts's
                 // own `setToolActiveToolbar` const shape exactly (same toolGroupIds this
                 // extension's registerMedSAMBoxTool.ts adds MedSAMBox to).

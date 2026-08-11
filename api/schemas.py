@@ -112,6 +112,39 @@ class SegmentBoxResponse(BaseModel):
     model_version: str
 
 
+class SegmentVolumeRequest(BaseModel):
+    """A box on one source slice, propagated through its complete DICOM series."""
+
+    sop_instance_uid: str
+    box_xyxy: tuple[float, float, float, float]
+    segment_label: str = "AI prompted lesion"
+    publish_to_orthanc: bool = True
+    # Optional active OHIF VOI. This is essential for structures such as lung nodules:
+    # a CT may store a mediastinal default even while the user is viewing a lung window.
+    window_center: float | None = None
+    window_width: float | None = None
+
+
+class SegmentVolumeSlice(BaseModel):
+    sop_instance_uid: str
+    mask_rle: dict
+
+
+class SegmentVolumeResponse(BaseModel):
+    seed_sop_instance_uid: str
+    masks: list[SegmentVolumeSlice]
+    source_slice_count: int
+    segmented_slice_count: int
+    voxel_count: int
+    volume_ml: float
+    axial_bbox_diagonal_mm: float
+    model_version: str
+    dicom_seg_series_instance_uid: str
+    dicom_seg_sop_instance_uid: str
+    orthanc_status: str
+    warning: str | None = None
+
+
 class AnalysisResultResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

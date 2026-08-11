@@ -25,9 +25,9 @@ def _seg_frames(ds: "pydicom.Dataset"):
 
     The DICOM SEG standard allows Segment Identification Sequence to live in
     SharedFunctionalGroupsSequence instead of being repeated in every per-frame group,
-    whenever the whole series only ever uses one segment. Confirmed against a real
-    encoder (highdicom): a single-segment, multi-frame SEG puts it in Shared, not
-    per-frame -- so both locations must be checked, not just per-frame.
+    whenever the whole series only ever uses one segment. Different highdicom releases
+    emit either that shared layout or a per-frame layout, so both locations must be
+    checked.
     """
     bits_allocated = int(ds.BitsAllocated)
     if bits_allocated != 1:

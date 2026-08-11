@@ -152,10 +152,8 @@ class ExtractReaderNodulesTests(unittest.TestCase):
         # 1 pixel at row index 5 * row_spacing 2.0mm -> y ~= 10.0mm.
         self.assertAlmostEqual(cy, 10.0, delta=0.3)
 
-    def test_single_segment_uses_shared_functional_group(self):
-        """DICOM SEG may put SegmentIdentificationSequence in
-        SharedFunctionalGroupsSequence (not per-frame) when only one segment is used
-        throughout -- confirmed against a real encoder (highdicom) that this happens."""
+    def test_single_segment_identification_can_be_shared_or_per_frame(self):
+        """Both standards-valid locations are accepted across highdicom versions."""
         import tempfile
         from pathlib import Path
 
@@ -168,7 +166,24 @@ class ExtractReaderNodulesTests(unittest.TestCase):
             _build_seg(seg_path, mask, [1.0, 1.0])
 
             ds = pydicom.dcmread(str(seg_path))
-            self.assertIn("SegmentIdentificationSequence", ds.SharedFunctionalGroupsSequence[0])
+            shared = ds.SharedFunctionalGroupsSequence[0]
+            if "SegmentIdentificationSequence" in shared:
+                self.assertEqual(
+                    int(shared.SegmentIdentificationSequence[0].ReferencedSegmentNumber),
+                    1,
+                )
+            else:
+                self.assertTrue(ds.PerFrameFunctionalGroupsSequence)
+                self.assertTrue(
+                    all(
+                        "SegmentIdentificationSequence" in group
+                        and int(
+                            group.SegmentIdentificationSequence[0].ReferencedSegmentNumber
+                        )
+                        == 1
+                        for group in ds.PerFrameFunctionalGroupsSequence
+                    )
+                )
 
             nodules = extract_reader_nodules(seg_path, slice_spacing_mm=1.0)
 

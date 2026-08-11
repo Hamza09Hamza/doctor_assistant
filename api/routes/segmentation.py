@@ -1,26 +1,40 @@
-"""`POST /v1/series/{id}/segment-box` — on-demand interactive 2D segmentation.
+"""On-demand box-prompted 2D and full-volume segmentation routes.
 
-Deliberately NOT the `BackgroundTasks`-queued pattern `analyses.py`/`series.py` use for
-`Pipeline.analyze`: MedSAM inference on one already-loaded 2D slice is sub-second, the
-caller (the viewer, mid-interaction) needs the mask back in the same request, and no
-`Analysis`/`Finding` DB rows make sense for a single exploratory click — the frontend
-owns accept/reject of the result, nothing is persisted here.
+Deliberately not the `BackgroundTasks`-queued `Pipeline.analyze` pattern: the viewer is
+waiting mid-interaction for masks it can accept/reject immediately, and these prompted
+results do not become automatic `Analysis`/`Finding` rows. The 2D route is transient;
+the full-volume route additionally persists its accepted model output as DICOM SEG.
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from experts.medsam_interactive import encode_binary_mask_rle
 
+from ..orthanc_client import OrthancClient
 from ..models import Series
-from ..schemas import SegmentBoxRequest, SegmentBoxResponse
+from ..schemas import (
+    SegmentBoxRequest,
+    SegmentBoxResponse,
+    SegmentVolumeRequest,
+    SegmentVolumeResponse,
+    SegmentVolumeSlice,
+)
+from ..volume_segmentation import (
+    build_interactive_dicom_seg,
+    load_dicom_volume,
+    measure_volume,
+)
 from .deps import get_db
 
 router = APIRouter(prefix="/v1/series", tags=["segmentation"])
+logger = logging.getLogger(__name__)
 
 
 def find_instance_file(storage_dir: Path, sop_instance_uid: str) -> Path:
@@ -106,4 +120,143 @@ def segment_box(
         sop_instance_uid=payload.sop_instance_uid,
         mask_rle=encode_binary_mask_rle(mask),
         model_version=segmenter.version,
+    )
+
+
+@router.post("/{series_id}/segment-volume", response_model=SegmentVolumeResponse)
+def segment_volume(
+    series_id: str,
+    payload: SegmentVolumeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> SegmentVolumeResponse:
+    """Propagate one slice box through a DICOM stack and persist a DICOM SEG.
+
+    Sparse RLE masks are returned for immediate OHIF painting.  The standards-based
+    DICOM SEG is always stored under the imported series' ``derived`` directory and is
+    also sent to Orthanc unless the caller explicitly disables publication.
+    """
+    segmenter = getattr(request.app.state, "medsam2", None)
+    if segmenter is None:
+        raise HTTPException(
+            status_code=503,
+            detail="3D interactive segmentation is not configured (use "
+            "MEDSAM2_BACKEND=mlx on Apple Silicon, or configure the Torch MedSAM2 checkpoint)",
+        )
+    try:
+        import highdicom  # noqa: F401 - preflight before expensive model inference
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="highdicom is required to persist the MedSAM2 result as DICOM SEG",
+        ) from exc
+
+    series = db.get(Series, series_id)
+    if series is None:
+        raise HTTPException(status_code=404, detail=f"no series {series_id!r}")
+    label = payload.segment_label.strip()
+    if not label:
+        raise HTTPException(status_code=422, detail="segment_label cannot be empty")
+
+    inference_lock = getattr(request.app.state, "medsam2_lock", None)
+    if inference_lock is not None and not inference_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=429,
+            detail="another full-volume inference is already running; retry after it finishes",
+        )
+    try:
+        return _segment_volume_unlocked(
+            series=series,
+            payload=payload,
+            request=request,
+            segmenter=segmenter,
+            label=label,
+        )
+    finally:
+        if inference_lock is not None:
+            inference_lock.release()
+
+
+def _segment_volume_unlocked(
+    *,
+    series: Series,
+    payload: SegmentVolumeRequest,
+    request: Request,
+    segmenter,
+    label: str,
+) -> SegmentVolumeResponse:
+    """Execute one resource-heavy request after the caller owns the inference slot."""
+    try:
+        source = load_dicom_volume(
+            Path(series.storage_dir),
+            series_instance_uid=series.dicom_series_uid,
+            seed_sop_instance_uid=payload.sop_instance_uid,
+            window_center=payload.window_center,
+            window_width=payload.window_width,
+        )
+        mask = segmenter.segment_volume(
+            source.display_volume,
+            source.seed_index,
+            payload.box_xyxy,
+        )
+        measurements = measure_volume(mask, source)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    derived_dir = Path(series.storage_dir) / "derived"
+    # Keep the artifact name backend-neutral: on Apple Silicon this may come from
+    # stock SAM2 MLX or a converted MedSAM2 checkpoint, while CUDA uses MedSAM2.
+    seg_path = derived_dir / f"prompted3d_{uuid.uuid4().hex}.dcm"
+    try:
+        seg_series_uid, seg_sop_uid = build_interactive_dicom_seg(
+            mask,
+            source,
+            seg_path,
+            segment_label=label,
+            model_version=segmenter.version,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"DICOM SEG creation failed: {exc}") from exc
+
+    orthanc_status = "disabled"
+    warning = None
+    publication_disabled = bool(
+        getattr(request.app.state, "disable_orthanc_publication", False)
+    )
+    if payload.publish_to_orthanc and not publication_disabled:
+        try:
+            with OrthancClient(request.app.state.orthanc_config) as orthanc:
+                orthanc.upload_instance(seg_path.read_bytes())
+            orthanc_status = "published"
+        except Exception as exc:  # noqa: BLE001 - preserve the completed local result
+            orthanc_status = "failed"
+            warning = (
+                "The 3D mask and DICOM SEG were created, but Orthanc publication failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            logger.warning("Prompted 3D DICOM SEG publication failed: %s", warning)
+
+    masks = [
+        SegmentVolumeSlice(
+            sop_instance_uid=sop_uid,
+            mask_rle=encode_binary_mask_rle(frame),
+        )
+        for sop_uid, frame in zip(source.sop_instance_uids, mask, strict=True)
+        if frame.any()
+    ]
+    return SegmentVolumeResponse(
+        seed_sop_instance_uid=payload.sop_instance_uid,
+        masks=masks,
+        source_slice_count=len(source.sop_instance_uids),
+        segmented_slice_count=measurements.segmented_slice_count,
+        voxel_count=measurements.voxel_count,
+        volume_ml=measurements.volume_ml,
+        axial_bbox_diagonal_mm=measurements.axial_bbox_diagonal_mm,
+        model_version=segmenter.version,
+        dicom_seg_series_instance_uid=seg_series_uid,
+        dicom_seg_sop_instance_uid=seg_sop_uid,
+        orthanc_status=orthanc_status,
+        warning=warning,
     )

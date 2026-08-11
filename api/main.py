@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -60,6 +62,56 @@ def _build_medsam(*, checkpoint_path: str | None, model_id: str | None):
         return None
 
 
+def _build_medsam2(
+    *,
+    checkpoint_path: str | None,
+    model_config: str | None,
+    device: str | None,
+    backend: str | None,
+    mlx_model: str | None,
+):
+    """Build CUDA MedSAM2 or Apple-Silicon MLX SAM2 behind one volume contract."""
+    requested_backend = (backend or "auto").strip().lower()
+    if requested_backend not in {"auto", "torch", "mlx", "disabled"}:
+        logger.warning("api.main: unsupported MEDSAM2_BACKEND=%r", requested_backend)
+        return None
+    if requested_backend == "auto":
+        if platform.system() == "Darwin" and platform.machine() == "arm64":
+            requested_backend = "mlx"
+        elif checkpoint_path:
+            requested_backend = "torch"
+        else:
+            requested_backend = "disabled"
+
+    if requested_backend == "disabled":
+        logger.info(
+            "api.main: 3D interactive segmentation skipped — set "
+            "MEDSAM2_BACKEND=mlx on Apple Silicon or MEDSAM2_CHECKPOINT_PATH for "
+            "the Torch/CUDA backend."
+        )
+        return None
+
+    try:
+        if requested_backend == "mlx":
+            from experts.medsam2_volume import SAM2MLXVolumeSegmenter
+
+            return SAM2MLXVolumeSegmenter(
+                model=mlx_model or "avbiswas/sam2.1-hiera-small-mlx-16bit",
+            )
+        if not checkpoint_path:
+            raise ValueError("MEDSAM2_CHECKPOINT_PATH is required for the Torch backend")
+        from experts.medsam2_volume import MedSAM2VolumeSegmenter
+
+        return MedSAM2VolumeSegmenter(
+            checkpoint_path=checkpoint_path,
+            model_config=model_config or "configs/sam2.1_hiera_t512.yaml",
+            device=device,
+        )
+    except Exception as exc:  # noqa: BLE001 - isolate optional runtime at startup
+        logger.warning("api.main: MedSAM2 unavailable (%s: %s)", type(exc).__name__, exc)
+        return None
+
+
 def create_app(
     *,
     database_url: str | None = None,
@@ -68,6 +120,7 @@ def create_app(
     orthanc_config: OrthancConfig | None = None,
     ohif_origin: str | None = None,
     medsam=None,
+    medsam2=None,
 ) -> FastAPI:
     settings = get_settings()
     resolved_database_url = database_url or settings.database_url
@@ -104,6 +157,22 @@ def create_app(
             model_id=os.environ.get("MEDSAM_MODEL_ID"),
         )
     )
+    app.state.medsam2 = (
+        medsam2
+        if medsam2 is not None
+        else _build_medsam2(
+            checkpoint_path=os.environ.get("MEDSAM2_CHECKPOINT_PATH"),
+            model_config=os.environ.get("MEDSAM2_MODEL_CONFIG"),
+            device=os.environ.get("MEDSAM2_DEVICE"),
+            backend=os.environ.get("MEDSAM2_BACKEND"),
+            mlx_model=os.environ.get("MEDSAM2_MLX_MODEL"),
+        )
+    )
+    # Full-volume inference can consume most of a GPU. Even one Uvicorn worker may
+    # execute several synchronous requests concurrently in its thread pool, so reject
+    # overlap explicitly instead of allowing two model passes to OOM the host/runtime.
+    app.state.medsam2_lock = threading.Lock()
+    app.state.disable_orthanc_publication = False
 
     # The OHIF findings panel (viewer/ohif/extensions/extension-doctor-assistant)
     # calls this API cross-origin from OHIF's own dev server — scoped to one

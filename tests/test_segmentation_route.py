@@ -41,6 +41,17 @@ class RaisingSegmenter:
         raise ValueError("box does not overlap a usable region")
 
 
+class FakeVolumeSegmenter:
+    version = "fake-medsam2:test"
+
+    def segment_volume(self, volume, seed_index, box_xyxy):
+        self.last_seed_index = seed_index
+        self.last_box = box_xyxy
+        mask = np.zeros_like(volume, dtype=bool)
+        mask[:, 8:12, 9:13] = True
+        return mask
+
+
 def _write_synthetic_dicom(directory: Path, sop_instance_uid: str) -> Path:
     file_meta = FileMetaDataset()
     file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.7"  # Secondary Capture
@@ -163,6 +174,134 @@ class SegmentationRouteTests(unittest.TestCase):
             json={"sop_instance_uid": self.sop_uid, "box_xyxy": [0, 0, 10, 10]},
         )
         self.assertEqual(response.status_code, 503)
+
+
+class VolumeSegmentationRouteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from scripts.nifti_to_dicom import build_dicom_series
+
+        self._tmp = tempfile.TemporaryDirectory()
+        tmp_path = Path(self._tmp.name)
+        self.storage_dir = tmp_path / "series"
+        self.series_uid = generate_uid()
+        datasets = build_dicom_series(
+            np.arange(32 * 32 * 3, dtype=np.float32).reshape(32, 32, 3),
+            np.diag([0.7, 0.8, 2.0, 1.0]),
+            self.storage_dir,
+            series_description="MedSAM2 API test",
+            modality="CT",
+            series_instance_uid=self.series_uid,
+        )
+        self.sop_uids = [str(dataset.SOPInstanceUID) for dataset in datasets]
+        self.study_uid = str(datasets[0].StudyInstanceUID)
+        self.segmenter = FakeVolumeSegmenter()
+        database_url = f"sqlite:///{tmp_path / 'test.db'}"
+        self.app = create_app(
+            database_url=database_url,
+            storage_dir=tmp_path / "uploads",
+            registry=ExpertRegistry(),
+            ohif_origin="http://testserver",
+            medsam=FakeSegmenter(),
+            medsam2=self.segmenter,
+        )
+        self.client = TestClient(self.app)
+
+        engine = build_engine(database_url)
+        self.addCleanup(engine.dispose)
+        session_factory = build_session_factory(engine)
+        with session_factory() as db:
+            study = Study(modality="ct", body_part="chest", source_filename="x", source="orthanc")
+            db.add(study)
+            db.flush()
+            series = Series(
+                study_id=study.id,
+                dicom_series_uid=self.series_uid,
+                dicom_modality="CT",
+                modality="ct",
+                body_part="chest",
+                instance_count=3,
+                storage_dir=str(self.storage_dir),
+                analysis_eligible=True,
+            )
+            db.add(series)
+            db.commit()
+            self.series_id = series.id
+
+    def tearDown(self) -> None:
+        self.app.state.engine.dispose()
+        self._tmp.cleanup()
+
+    def test_full_volume_masks_measurements_and_dicom_seg_contract(self) -> None:
+        response = self.client.post(
+            f"/v1/series/{self.series_id}/segment-volume",
+            json={
+                "sop_instance_uid": self.sop_uids[1],
+                "box_xyxy": [7, 7, 14, 14],
+                "publish_to_orthanc": False,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["seed_sop_instance_uid"], self.sop_uids[1])
+        self.assertEqual(body["source_slice_count"], 3)
+        self.assertEqual(body["segmented_slice_count"], 3)
+        self.assertEqual(body["voxel_count"], 48)
+        self.assertAlmostEqual(body["volume_ml"], 48 * 0.7 * 0.8 * 2.0 / 1000.0)
+        self.assertEqual({item["sop_instance_uid"] for item in body["masks"]}, set(self.sop_uids))
+        self.assertEqual(body["orthanc_status"], "disabled")
+        self.assertEqual(self.segmenter.last_seed_index, 1)
+
+        seg_files = list((self.storage_dir / "derived").glob("prompted3d_*.dcm"))
+        self.assertEqual(len(seg_files), 1)
+        seg = pydicom.dcmread(str(seg_files[0]))
+        self.assertEqual(str(seg.Modality), "SEG")
+        self.assertEqual(str(seg.SeriesInstanceUID), body["dicom_seg_series_instance_uid"])
+        self.assertEqual(str(seg.SOPInstanceUID), body["dicom_seg_sop_instance_uid"])
+        self.assertEqual(str(seg.StudyInstanceUID), self.study_uid)
+        self.assertEqual(str(seg.ReferencedSeriesSequence[0].SeriesInstanceUID), self.series_uid)
+
+    def test_unconfigured_medsam2_is_503(self) -> None:
+        self.app.state.medsam2 = None
+        response = self.client.post(
+            f"/v1/series/{self.series_id}/segment-volume",
+            json={"sop_instance_uid": self.sop_uids[1], "box_xyxy": [7, 7, 14, 14]},
+        )
+        self.assertEqual(response.status_code, 503)
+
+    def test_overlapping_volume_inference_is_rejected_before_model_work(self) -> None:
+        self.app.state.medsam2_lock.acquire()
+        try:
+            response = self.client.post(
+                f"/v1/series/{self.series_id}/segment-volume",
+                json={
+                    "sop_instance_uid": self.sop_uids[1],
+                    "box_xyxy": [7, 7, 14, 14],
+                    "publish_to_orthanc": False,
+                },
+            )
+        finally:
+            self.app.state.medsam2_lock.release()
+
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("already running", response.json()["detail"])
+
+    def test_colab_mode_forces_orthanc_publication_off(self) -> None:
+        self.app.state.disable_orthanc_publication = True
+        response = self.client.post(
+            f"/v1/series/{self.series_id}/segment-volume",
+            json={
+                "sop_instance_uid": self.sop_uids[1],
+                "box_xyxy": [7, 7, 14, 14],
+                # The normal OHIF client requests publication. A remote Colab API must
+                # not interpret localhost:8042 as the Mac's Orthanc.
+                "publish_to_orthanc": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["orthanc_status"], "disabled")
+        self.assertIsNone(response.json()["warning"])
 
 
 if __name__ == "__main__":
