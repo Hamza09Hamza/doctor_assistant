@@ -213,7 +213,12 @@ export default function DoctorAssistantPanel() {
         </div>
       )}
 
-      {state.phase === 'ready' && state.latest && <AnalysisSummary result={state.latest} />}
+      {state.phase === 'ready' && state.latest && (
+        <AnalysisSummary
+          result={state.latest}
+          onRetry={runAnalysis}
+        />
+      )}
     </div>
   );
 }
@@ -294,12 +299,19 @@ function UrgencyBadge({ urgency }: { urgency: string | null | undefined }) {
   );
 }
 
-function AnalysisSummary({ result }: { result: AnalysisResult }) {
+function AnalysisSummary({ result, onRetry }: { result: AnalysisResult; onRetry: () => void }) {
   if (result.status === 'failed') {
     return (
       <div className="bg-error-bg border-error-border text-error-text rounded-md border p-3">
         <div className="text-sm font-semibold">Analysis failed</div>
         {result.error && <div className="mt-1 text-xs opacity-80">{result.error}</div>}
+        <Button
+          variant="default"
+          onClick={onRetry}
+          className="mt-3 w-full"
+        >
+          Retry AI Analysis
+        </Button>
       </div>
     );
   }
