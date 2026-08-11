@@ -168,6 +168,13 @@ exact Clinique Amina URL. See `docs/TOTALSEGMENTATOR_OHIF.md` for the short runb
 The NIfTI-only Zenodo demo has no source DICOM instances to reference and therefore
 cannot itself produce a standards-valid DICOM SEG.
 
+For the interactive full-volume path (one OHIF box -> MedSAM2 propagation -> measured
+DICOM SEG -> Orthanc), see [MEDSAM2_3D_OHIF.md](MEDSAM2_3D_OHIF.md). The pinned
+high-quality CT, radiologist reference, and one-command Mac acceptance run are in
+[LIDC_INTERACTIVE_DEMO.md](LIDC_INTERACTIVE_DEMO.md).
+To run the Torch backend on a Colab GPU while keeping only OHIF/Orthanc on the Mac, use
+[COLAB_INFERENCE_SERVER.md](COLAB_INFERENCE_SERVER.md).
+
 Do not treat a successful synthetic CT wiring run as organ-segmentation validation.
 TotalSegmentator must be evaluated on correctly de-identified, appropriately licensed
 clinical-format CT data with preserved geometry.
