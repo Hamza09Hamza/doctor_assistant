@@ -63,4 +63,5 @@ viewer/ohif/**/dist/
 viewer/ohif/**/.rspack-cache/
 viewer/ohif/**/.webpack-cache/
 viewer/ohif/.pnpm-store/
+.pnpm-store/
 viewer/ohif/*.tsbuildinfo

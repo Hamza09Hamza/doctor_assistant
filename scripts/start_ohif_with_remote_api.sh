@@ -20,6 +20,18 @@ echo
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT/viewer/ohif/platform/app"
 
+# OHIF's current Rspack toolchain requires Node 24+. Prefer the side-by-side
+# Homebrew runtime so the system's older `node`/`pnpm` cannot select a stale binding.
+NODE24_BIN="/opt/homebrew/opt/node@24/bin"
+if [[ -x "$NODE24_BIN/node" ]]; then
+  export PATH="$NODE24_BIN:$PATH"
+fi
+RSPACK_BIN="$REPO_ROOT/viewer/ohif/node_modules/.bin/rspack"
+if [[ ! -x "$RSPACK_BIN" ]]; then
+  echo "OHIF dependencies are missing. Reinstall viewer/ohif dependencies with Node 24 first." >&2
+  exit 1
+fi
+
 # Keep the viewer itself bounded on the 16 GB Mac. This is only the UI compiler;
 # all Torch/MedSAM2 work stays in Colab.
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}"
@@ -34,4 +46,4 @@ export APP_CONFIG=config/doctor_assistant.js
 
 echo "OHIF API proxy -> $DOCTOR_ASSISTANT_API_TARGET"
 echo "OHIF will remain at http://localhost:3000 and use local Orthanc for DICOM."
-exec pnpm exec rspack serve --config .webpack/webpack.pwa.js
+exec "$RSPACK_BIN" serve --config .webpack/webpack.pwa.js

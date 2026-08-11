@@ -6,9 +6,6 @@ importers:
   .:
     configDependencies: {}
     packageManagerDependencies:
-      '@pnpm/exe':
-        specifier: 12.0.0-beta.3
-        version: 12.0.0-beta.3
       pnpm:
         specifier: 12.0.0-beta.3
         version: 12.0.0-beta.3
@@ -59,11 +56,6 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@pnpm/exe@12.0.0-beta.3':
-    resolution: {integrity: sha512-FTQuUKKzTeXsQbHS+pqb9qgAKoxwUiBPAZoOWN9cnDX9aG3l9ZbuR9BlrtxUMzfHetuQ+wp2T5F+UttClrbJ/A==}
-    engines: {node: '>=18.*'}
-    hasBin: true
-
   pnpm@12.0.0-beta.3:
     resolution: {integrity: sha512-MhBriMSBsxzgm65MXQTRfWbDJ9ILmK0PFWDkCiaQS/1frBz5WIMy5b4x+mg5gnvJ+lhlKHcDhPh/mLkAF+ZyzA==}
     engines: {node: '>=18.*'}
@@ -94,17 +86,6 @@ snapshots:
 
   '@pnpm/exe.win32-x64@12.0.0-beta.3':
     optional: true
-
-  '@pnpm/exe@12.0.0-beta.3':
-    optionalDependencies:
-      '@pnpm/exe.darwin-arm64': 12.0.0-beta.3
-      '@pnpm/exe.darwin-x64': 12.0.0-beta.3
-      '@pnpm/exe.linux-arm64': 12.0.0-beta.3
-      '@pnpm/exe.linux-arm64-musl': 12.0.0-beta.3
-      '@pnpm/exe.linux-x64': 12.0.0-beta.3
-      '@pnpm/exe.linux-x64-musl': 12.0.0-beta.3
-      '@pnpm/exe.win32-arm64': 12.0.0-beta.3
-      '@pnpm/exe.win32-x64': 12.0.0-beta.3
 
   pnpm@12.0.0-beta.3:
     optionalDependencies:
