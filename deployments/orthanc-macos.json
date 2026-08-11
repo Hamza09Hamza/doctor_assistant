@@ -5,10 +5,7 @@
   "HttpPort": 8042,
   "DicomServerEnabled": false,
   "RemoteAccessAllowed": true,
-  "AuthenticationEnabled": true,
-  "RegisteredUsers": {
-    "doctor_assistant": "doctor_assistant"
-  },
+  "AuthenticationEnabled": false,
   "DicomWeb": {
     "Enable": true,
     "Root": "/dicom-web/",
