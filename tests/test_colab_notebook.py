@@ -21,8 +21,8 @@ class ColabNotebookTests(unittest.TestCase):
         )
         ast.parse(code)
 
-        self.assertIn("userdata.get('NGROK_TOKEN')", code)
-        self.assertNotIn("NGROK_TOKEN =", code)
+        self.assertIn("NGROK_TOKEN = '", code)
+        self.assertNotIn("userdata.get", code)
         self.assertIn("'--workers', '1'", code)
         self.assertIn("gpu_gib >= 18", code)
         self.assertIn("major >= 8", code)

@@ -81,8 +81,8 @@ python scripts/prepare_lidc_interactive_demo.py --upload-orthanc
 Open `notebooks/medsam2_inference_server_colab.ipynb` in Google Colab and select an L4
 or other Ampere-or-newer GPU runtime with at least 18 GiB GPU memory.
 
-In Colab's **Secrets** panel, add a secret named `NGROK_TOKEN` and enable notebook
-access. Run the cells in order. The notebook:
+Run the cells in order. The temporary test token is configured directly in the
+notebook, so the Colab Secrets panel is not required. The notebook:
 
 1. checks GPU capability and memory before installing or loading the model;
 2. clones this repository's `main` branch;
@@ -92,8 +92,7 @@ access. Run the cells in order. The notebook:
 6. starts one Uvicorn worker and permits only one full-volume request at a time;
 7. starts ngrok and prints the public HTTPS API URL.
 
-The token is read at runtime with `google.colab.userdata.get("NGROK_TOKEN")`; it is not
-stored in this repository or printed by the notebook.
+The token is used to create the ngrok tunnel but is not printed by the notebook.
 
 ## 3. Point local OHIF at Colab
 
