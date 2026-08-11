@@ -1,9 +1,9 @@
 {
   "Name": "doctor_assistant-orthanc",
   "StorageDirectory": "${DOCTOR_ASSISTANT_ORTHANC_STORAGE}",
-  "Plugins": ["${DOCTOR_ASSISTANT_ORTHANC_PLUGINS}"],
+  "Plugins": ["${DOCTOR_ASSISTANT_ORTHANC_DICOMWEB_PLUGIN}"],
   "HttpPort": 8042,
-  "DicomPort": 4242,
+  "DicomServerEnabled": false,
   "RemoteAccessAllowed": true,
   "AuthenticationEnabled": true,
   "RegisteredUsers": {

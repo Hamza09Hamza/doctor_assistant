@@ -16,7 +16,7 @@ find_orthanc() {
   find "$VERSION_ROOT" -type f \( -name 'Orthanc.exec' -o -name 'Orthanc' \) -print -quit
 }
 
-if [[ -n "$(find_orthanc 2>/dev/null)" ]]; then
+if [[ -n "$(find_orthanc 2>/dev/null)" && -n "$(find "$VERSION_ROOT" -type f -name '*OrthancDicomWeb*.dylib' -print -quit 2>/dev/null)" ]]; then
   echo "Orthanc macOS ${ORTHANC_MACOS_VERSION} is already installed in:"
   echo "  $VERSION_ROOT"
   exit 0
@@ -58,7 +58,7 @@ echo "Extracting Orthanc..."
 ditto -x -k "$ARCHIVE_PATH" "$VERSION_ROOT"
 
 ORTHANC_BIN="$(find_orthanc)"
-DICOMWEB_PLUGIN="$(find "$VERSION_ROOT" -type f -name 'OrthancDicomWeb*.dylib' -print -quit)"
+DICOMWEB_PLUGIN="$(find "$VERSION_ROOT" -type f -name '*OrthancDicomWeb*.dylib' -print -quit)"
 if [[ -z "$ORTHANC_BIN" || -z "$DICOMWEB_PLUGIN" ]]; then
   echo "The package did not contain the expected Orthanc executable and DICOMweb plugin." >&2
   exit 1

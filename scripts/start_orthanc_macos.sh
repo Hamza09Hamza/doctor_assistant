@@ -24,7 +24,7 @@ if [[ ! -d "$SEARCH_ROOT" ]]; then
 fi
 
 ORTHANC_BIN="$(find "$SEARCH_ROOT" -type f \( -name 'Orthanc.exec' -o -name 'Orthanc' \) -print -quit)"
-DICOMWEB_PLUGIN="$(find "$SEARCH_ROOT" -type f -name 'OrthancDicomWeb*.dylib' -print -quit)"
+DICOMWEB_PLUGIN="$(find "$SEARCH_ROOT" -type f -name '*OrthancDicomWeb*.dylib' -print -quit)"
 if [[ -z "$ORTHANC_BIN" ]]; then
   echo "Could not find Orthanc.exec under: $SEARCH_ROOT" >&2
   exit 1
@@ -36,10 +36,11 @@ fi
 
 mkdir -p "$STORAGE_PATH"
 export DOCTOR_ASSISTANT_ORTHANC_STORAGE="$STORAGE_PATH"
-export DOCTOR_ASSISTANT_ORTHANC_PLUGINS="$(dirname "$DICOMWEB_PLUGIN")"
+export DOCTOR_ASSISTANT_ORTHANC_DICOMWEB_PLUGIN="$DICOMWEB_PLUGIN"
 
 echo "Starting native Orthanc (no Docker, no local AI inference)..."
 echo "  REST/DICOMweb: http://localhost:8042"
+echo "  Native DICOM listener: disabled (REST upload and DICOMweb only)"
 echo "  Storage: $DOCTOR_ASSISTANT_ORTHANC_STORAGE"
 echo "Leave this terminal open; press Ctrl-C to stop Orthanc."
 exec "$ORTHANC_BIN" "$CONFIG_PATH"
