@@ -32,30 +32,11 @@ The download is about 320 MB. The server itself is lightweight and does not load
 AI model. The installer keeps the package and Orthanc database under the ignored
 `data/` directory. Leave the second command running while testing.
 
-If the official download server's certificate is rejected by command-line `curl`,
-download `Orthanc-macOS-26.4.2.zip` from the
-[official macOS package index](https://orthanc.uclouvain.be/downloads/macos/packages/universal/)
-in the browser and rerun the installer. It automatically uses the file in `Downloads`.
-
-If a network filter blocks the Orthanc domain entirely, interrupt only the Colab
-monitoring cell and run this temporary cell. The API process stays alive:
-
-```python
-from google.colab import files
-import requests
-
-url = "https://orthanc.uclouvain.be/downloads/macos/packages/universal/Orthanc-macOS-26.4.2.zip"
-path = "/content/Orthanc-macOS-26.4.2.zip"
-with requests.get(url, stream=True, timeout=120) as response:
-    response.raise_for_status()
-    with open(path, "wb") as output:
-        for chunk in response.iter_content(1024 * 1024):
-            output.write(chunk)
-files.download(path)
-```
-
-After the browser finishes saving it to `Downloads`, rerun
-`bash scripts/install_orthanc_macos.sh`. The installer detects the ZIP there.
+If a network filter blocks the official Orthanc host, the Colab notebook downloads the
+archive and serves it through the already-running ngrok API tunnel. Copy the printed
+`ORTHANC_ARCHIVE_URL=... bash scripts/install_orthanc_macos.sh` command into the Mac
+terminal. This avoids Colab's unreliable browser-file transfer and does not create a
+second ngrok tunnel.
 
 In another terminal, upload the already prepared LIDC study:
 
@@ -89,8 +70,10 @@ notebook, so the Colab Secrets panel is not required. The notebook:
 3. installs the official MedSAM2 package without building its optional CUDA extension;
 4. downloads only `MedSAM2_CTLesion.pt`, not every upstream checkpoint;
 5. downloads and stages the pinned 238-slice LIDC CT and radiologist SEG;
-6. starts one Uvicorn worker and permits only one full-volume request at a time;
-7. starts ngrok and prints the public HTTPS API URL.
+6. fetches the Orthanc macOS ZIP once and exposes it at a restricted route on the same
+   ngrok tunnel;
+7. starts one Uvicorn worker and permits only one full-volume request at a time;
+8. starts ngrok and prints the public HTTPS API URL plus the Mac installer command.
 
 The token is used to create the ngrok tunnel but is not printed by the notebook.
 

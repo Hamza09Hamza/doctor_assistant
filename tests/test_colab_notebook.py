@@ -30,7 +30,9 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertIn("api.colab_server:create_app", code)
         self.assertIn("DOWNLOAD_ORTHANC_MACOS = True", code)
         self.assertIn("Orthanc-macOS-26.4.2.zip", code)
-        self.assertIn("files.download(str(orthanc_zip))", code)
+        self.assertIn("COLAB_DOWNLOAD_DIRECTORY", code)
+        self.assertIn("/downloads/orthanc-macos", code)
+        self.assertIn("ORTHANC_ARCHIVE_URL=", code)
         self.assertIn("orthanc_zip.stat().st_size > 300 * 1024**2", code)
 
 

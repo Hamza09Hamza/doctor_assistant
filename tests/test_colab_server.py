@@ -17,10 +17,13 @@ class ColabServerTests(unittest.TestCase):
     def test_health_and_resource_guards_without_loading_a_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            archive = root / "Orthanc-macOS-26.4.2.zip"
+            archive.write_bytes(b"test-archive")
             env = {
                 "DATABASE_URL": f"sqlite:///{root / 'colab.db'}",
                 "STORAGE_DIR": str(root / "storage"),
                 "MEDSAM2_BACKEND": "disabled",
+                "COLAB_DOWNLOAD_DIRECTORY": str(root),
             }
             with mock.patch.dict(os.environ, env, clear=False):
                 app = create_app()
@@ -28,6 +31,7 @@ class ColabServerTests(unittest.TestCase):
 
             with TestClient(app) as client:
                 response = client.get("/health")
+                archive_response = client.get("/downloads/orthanc-macos")
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["status"], "ok")
@@ -37,6 +41,9 @@ class ColabServerTests(unittest.TestCase):
             self.assertEqual(response.json()["orthanc_publication"], "disabled")
             self.assertTrue(app.state.disable_orthanc_publication)
             self.assertEqual(app.state.registry.experts(), [])
+            self.assertEqual(archive_response.status_code, 200)
+            self.assertEqual(archive_response.content, b"test-archive")
+            self.assertEqual(archive_response.headers["content-type"], "application/zip")
 
 
 if __name__ == "__main__":

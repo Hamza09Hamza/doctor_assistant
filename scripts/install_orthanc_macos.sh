@@ -4,7 +4,7 @@ set -euo pipefail
 # Official universal package: native on both Apple Silicon and Intel Macs.
 ORTHANC_MACOS_VERSION="${ORTHANC_MACOS_VERSION:-26.4.2}"
 ORTHANC_ARCHIVE="Orthanc-macOS-${ORTHANC_MACOS_VERSION}.zip"
-ORTHANC_URL="https://orthanc.uclouvain.be/downloads/macos/packages/universal/${ORTHANC_ARCHIVE}"
+ORTHANC_ARCHIVE_URL="${ORTHANC_ARCHIVE_URL:-https://orthanc.uclouvain.be/downloads/macos/packages/universal/${ORTHANC_ARCHIVE}}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INSTALL_ROOT="${REPO_ROOT}/data/orthanc-macos"
@@ -29,7 +29,7 @@ if [[ -f "$DOWNLOADED_ARCHIVE" ]]; then
   echo "Using the package already downloaded by the browser:"
   echo "  $ARCHIVE_PATH"
 elif [[ ! -f "$ARCHIVE_PATH" ]]; then
-  echo "Downloading the official Orthanc macOS package (~320 MB)..."
+  echo "Downloading Orthanc macOS package (~320 MB)..."
   CURL_TLS_ARGS=()
   if [[ -x "${REPO_ROOT}/.venv-mlx/bin/python" ]]; then
     CERT_BUNDLE="$("${REPO_ROOT}/.venv-mlx/bin/python" -c \
@@ -40,7 +40,7 @@ elif [[ ! -f "$ARCHIVE_PATH" ]]; then
   fi
   PARTIAL_PATH="${ARCHIVE_PATH}.partial"
   if ! curl --fail --location --progress-bar "${CURL_TLS_ARGS[@]}" \
-    "$ORTHANC_URL" --output "$PARTIAL_PATH"; then
+    "$ORTHANC_ARCHIVE_URL" --output "$PARTIAL_PATH"; then
     if [[ "${ORTHANC_ALLOW_INSECURE_DOWNLOAD:-0}" != "1" ]]; then
       rm -f "$PARTIAL_PATH"
       echo "TLS verification failed. Download the package in Safari, or explicitly" >&2
@@ -49,7 +49,7 @@ elif [[ ! -f "$ARCHIVE_PATH" ]]; then
     fi
     echo "Retrying the same official URL with curl TLS verification disabled..." >&2
     curl --fail --location --progress-bar --insecure \
-      "$ORTHANC_URL" --output "$PARTIAL_PATH"
+      "$ORTHANC_ARCHIVE_URL" --output "$PARTIAL_PATH"
   fi
   mv "$PARTIAL_PATH" "$ARCHIVE_PATH"
 fi
