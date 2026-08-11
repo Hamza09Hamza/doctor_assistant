@@ -226,6 +226,9 @@ module.exports = (env, argv) => {
                 context: ['/doctor-assistant-api'],
                 target: DOCTOR_ASSISTANT_API_TARGET,
                 changeOrigin: true,
+                // ngrok otherwise responds to browser requests with its HTML
+                // interstitial, which the findings panel then cannot parse as JSON.
+                headers: { 'ngrok-skip-browser-warning': 'doctor-assistant' },
                 pathRewrite: { '^/doctor-assistant-api': '' },
               },
             ]
@@ -277,6 +280,8 @@ module.exports = (env, argv) => {
               context: ['/doctor-assistant-api'],
               target: DOCTOR_ASSISTANT_API_TARGET,
               changeOrigin: true,
+              // Keep the remote Colab API response as JSON in both proxy modes.
+              headers: { 'ngrok-skip-browser-warning': 'doctor-assistant' },
               pathRewrite: { '^/doctor-assistant-api': '' },
             },
           ]
