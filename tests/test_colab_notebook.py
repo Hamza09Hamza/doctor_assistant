@@ -28,6 +28,9 @@ class ColabNotebookTests(unittest.TestCase):
         self.assertIn("major >= 8", code)
         self.assertIn("SAM2_BUILD_CUDA='0'", code)
         self.assertIn("api.colab_server:create_app", code)
+        # The scan-analysis route loads the staged DICOM volume through MONAI.
+        # MedSAM2 can boot without it, so the health check alone would miss this.
+        self.assertIn("'monai>=1.3,<2.0'", code)
         self.assertIn("DOWNLOAD_ORTHANC_MACOS = True", code)
         self.assertIn("Orthanc-macOS-26.4.2.zip", code)
         self.assertIn("COLAB_DOWNLOAD_DIRECTORY", code)
