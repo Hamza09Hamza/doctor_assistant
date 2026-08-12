@@ -12,6 +12,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# A free-form box prompt says only "segment the selected structure". It does not
+# establish pathology. DICOM CID 7150 permits Tissue as a generic segmentation
+# category; its linked current property-type group CID 7191 includes CID 7166, where
+# Tissue is the corresponding generic type.
+# Keep these explicit and test-visible so this path can never silently regress to the
+# clinically stronger Morphologically Abnormal Structure / Lesion assertion.
+PROMPTED_STRUCTURE_CATEGORY_CODE = ("85756007", "SCT", "Tissue")
+PROMPTED_STRUCTURE_TYPE_CODE = ("85756007", "SCT", "Tissue")
+
+
 @dataclass(frozen=True)
 class LoadedDicomVolume:
     datasets: tuple[object, ...]
@@ -268,10 +278,8 @@ def build_interactive_dicom_seg(
     description = SegmentDescription(
         segment_number=1,
         segment_label=segment_label[:64],
-        segmented_property_category=CodedConcept(
-            "49755003", "SCT", "Morphologically Abnormal Structure"
-        ),
-        segmented_property_type=CodedConcept("52988006", "SCT", "Lesion"),
+        segmented_property_category=CodedConcept(*PROMPTED_STRUCTURE_CATEGORY_CODE),
+        segmented_property_type=CodedConcept(*PROMPTED_STRUCTURE_TYPE_CODE),
         algorithm_type="SEMIAUTOMATIC",
         algorithm_identification=algorithm,
     )

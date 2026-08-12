@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useSystem } from '@ohif/core';
 import { Button, Badge, PanelSection, Icons } from '@ohif/ui-next';
 import {
@@ -6,12 +6,16 @@ import {
   listSeriesAnalyses,
   submitSeriesAnalysis,
   getAnalysisResult,
+  getRuntimeHealth,
+  detectLungNodules,
   NotFoundError,
   SeriesInfo,
   AnalysisResult,
   FindingInfo,
   RecommendationInfo,
+  LungNoduleDetectionResult,
 } from './apiClient';
+import { selectLungNoduleCandidate } from './lungNoduleCandidateEvents';
 
 const POLL_INTERVAL_MS = 1500;
 
@@ -50,13 +54,28 @@ function useActiveSeriesInstanceUid(): string | null {
 type PanelState =
   | { phase: 'loading' }
   | { phase: 'not-imported' }
+  | {
+      phase: 'interactive-ready';
+      series: SeriesInfo;
+      modelVersion: string | null;
+      detectorConfigured: boolean;
+      detectorVersion: string | null;
+    }
   | { phase: 'ready'; series: SeriesInfo; latest: AnalysisResult | null }
   | { phase: 'running'; series: SeriesInfo; analysisId: string }
+  | { phase: 'error'; message: string };
+
+type CandidateScanState =
+  | { phase: 'idle' }
+  | { phase: 'running' }
+  | { phase: 'complete'; result: LungNoduleDetectionResult }
   | { phase: 'error'; message: string };
 
 export default function DoctorAssistantPanel() {
   const seriesInstanceUid = useActiveSeriesInstanceUid();
   const [state, setState] = useState<PanelState>({ phase: 'loading' });
+  const [candidateScan, setCandidateScan] = useState<CandidateScanState>({ phase: 'idle' });
+  const candidateScanGeneration = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,10 +83,35 @@ export default function DoctorAssistantPanel() {
       setState({ phase: 'loading' });
       return;
     }
+    candidateScanGeneration.current += 1;
+    setCandidateScan({ phase: 'idle' });
     setState({ phase: 'loading' });
     (async () => {
       try {
         const series = await findSeriesByDicomUid(seriesInstanceUid);
+        // `/health` is a Colab-inference capability probe, not a prerequisite for
+        // normal API analysis. Older/full API deployments legitimately omit it; only
+        // switch panel modes when the endpoint explicitly identifies Colab mode.
+        let runtime = null;
+        try {
+          runtime = await getRuntimeHealth();
+        } catch (error) {
+          if (!(error instanceof NotFoundError)) {
+            throw error;
+          }
+        }
+        if (runtime?.mode === 'colab-inference-only') {
+          if (!cancelled) {
+            setState({
+              phase: 'interactive-ready',
+              series,
+              modelVersion: runtime.model_version,
+              detectorConfigured: Boolean(runtime.lung_nodule_detector_configured),
+              detectorVersion: runtime.lung_nodule_detector_version ?? null,
+            });
+          }
+          return;
+        }
         const analyses = await listSeriesAnalyses(series.id);
         if (cancelled) {
           return;
@@ -129,6 +173,29 @@ export default function DoctorAssistantPanel() {
     }
   }, [state]);
 
+  const scanForNoduleCandidates = useCallback(async () => {
+    if (state.phase !== 'interactive-ready' || !state.detectorConfigured) {
+      return;
+    }
+    const requestedSeriesId = state.series.id;
+    const requestGeneration = candidateScanGeneration.current + 1;
+    candidateScanGeneration.current = requestGeneration;
+    setCandidateScan({ phase: 'running' });
+    try {
+      const result = await detectLungNodules(state.series.id);
+      if (
+        candidateScanGeneration.current === requestGeneration &&
+        result.series_id === requestedSeriesId
+      ) {
+        setCandidateScan({ phase: 'complete', result });
+      }
+    } catch (error) {
+      if (candidateScanGeneration.current === requestGeneration) {
+        setCandidateScan({ phase: 'error', message: String(error) });
+      }
+    }
+  }, [state]);
+
   if (state.phase === 'loading') {
     return (
       <div className="flex flex-col gap-3 p-3">
@@ -161,6 +228,97 @@ export default function DoctorAssistantPanel() {
           <div className="text-sm font-semibold">Something went wrong while checking this scan</div>
           <div className="text-error-text/80 mt-1 font-mono text-xs">{state.message}</div>
         </div>
+      </div>
+    );
+  }
+
+  if (state.phase === 'interactive-ready') {
+    return (
+      <div className="flex flex-col gap-3 p-3">
+        <PanelBrandHeader />
+        <div className="text-muted-foreground text-xs">
+          {state.series.modality} / {state.series.body_part}
+        </div>
+        <InfoCard
+          icon={<Icons.NotificationInfo className="h-5 w-5" />}
+          headline="MedSAM2 structure segmentation is ready"
+          detail="Choose Segment structure (tight box), then box one visible structure on an axial slice. This outlines the prompt through the volume; it does not determine whether the structure is abnormal."
+        />
+        {state.detectorConfigured && (
+          <div className="border-border bg-card shadow-brand rounded-xl border p-3">
+            <div className="font-serif text-foreground text-sm font-semibold">
+              Automatic lung-nodule shortlist
+            </div>
+            <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+              Scans the complete chest CT for candidates. Expect false marks: this detector
+              found 21 of 23 consensus nodules across 27 eligible LIDC scans whose CT
+              SeriesInstanceUIDs were absent from LUNA16's published 888-series corpus,
+              with 2.15 false candidates per scan at its fixed threshold.
+            </p>
+
+            {candidateScan.phase === 'idle' && (
+              <Button
+                variant="default"
+                onClick={scanForNoduleCandidates}
+                data-cy="scan-lung-nodule-candidates"
+                className="mt-3 w-full"
+              >
+                Scan for nodule candidates
+              </Button>
+            )}
+
+            {candidateScan.phase === 'running' && (
+              <div
+                className="bg-info-bg border-info-border text-info-text mt-3 flex items-start gap-2 rounded-md border p-2.5"
+                data-cy="lung-nodule-scan-running"
+              >
+                <Icons.LoadingOHIFMark className="mt-0.5 h-4 w-4 shrink-0" />
+                <div>
+                  <div className="text-xs font-semibold">Scanning the complete CT…</div>
+                  <div className="mt-0.5 text-[11px] opacity-80">
+                    The Colab worker is locked until candidate detection finishes.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {candidateScan.phase === 'error' && (
+              <div className="bg-error-bg border-error-border text-error-text mt-3 rounded-md border p-2.5">
+                <div className="text-xs font-semibold">Candidate scan failed</div>
+                <div className="mt-1 font-mono text-[10px] opacity-80">
+                  {candidateScan.message}
+                </div>
+                <Button
+                  variant="secondary"
+                  onClick={scanForNoduleCandidates}
+                  className="mt-2 w-full"
+                >
+                  Retry candidate scan
+                </Button>
+              </div>
+            )}
+
+            {candidateScan.phase === 'complete' && (
+              <CandidateShortlist
+                result={candidateScan.result}
+                onSelect={(candidate, candidateIndex) =>
+                  selectLungNoduleCandidate({
+                    seriesId: state.series.id,
+                    candidateIndex,
+                    candidate,
+                  })
+                }
+                onRescan={scanForNoduleCandidates}
+              />
+            )}
+          </div>
+        )}
+        {(state.modelVersion || state.detectorVersion) && (
+          <div className="text-muted-foreground flex flex-col gap-0.5 font-mono text-[10px]">
+            {state.detectorVersion && <span>{state.detectorVersion}</span>}
+            {state.modelVersion && <span>{state.modelVersion}</span>}
+          </div>
+        )}
       </div>
     );
   }
@@ -219,6 +377,80 @@ export default function DoctorAssistantPanel() {
           onRetry={runAnalysis}
         />
       )}
+    </div>
+  );
+}
+
+function CandidateShortlist({
+  result,
+  onSelect,
+  onRescan,
+}: {
+  result: LungNoduleDetectionResult;
+  onSelect: (candidate: LungNoduleDetectionResult['detections'][number], index: number) => void;
+  onRescan: () => void;
+}) {
+  if (!result.detections.length) {
+    return (
+      <div className="mt-3">
+        <div className="bg-muted border-border text-muted-foreground rounded-md border p-2.5 text-xs">
+          No candidate crossed the fixed score threshold. This does not prove the scan is clear.
+        </div>
+        <Button
+          variant="secondary"
+          onClick={onRescan}
+          className="mt-2 w-full"
+        >
+          Scan again
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 flex flex-col gap-2" data-cy="lung-nodule-candidate-list">
+      <div className="text-muted-foreground flex items-center justify-between text-[11px]">
+        <span>
+          {result.detections.length} candidate{result.detections.length === 1 ? '' : 's'} at score ≥{' '}
+          {result.min_score.toFixed(2)}
+        </span>
+        <button
+          type="button"
+          onClick={onRescan}
+          className="text-primary hover:text-primary-hover underline underline-offset-2"
+        >
+          Rescan
+        </button>
+      </div>
+      {result.detections.map((candidate, index) => {
+        const largestEdgeMm = Math.max(...candidate.size_whd_mm);
+        return (
+          <button
+            key={`${candidate.seed_sop_instance_uid}-${index}`}
+            type="button"
+            data-cy={`lung-nodule-candidate-${index + 1}`}
+            onClick={() => onSelect(candidate, index)}
+            className="border-border bg-background hover:border-primary/70 hover:bg-primary/5 focus-visible:ring-primary group flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
+          >
+            <span className="border-accent text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] font-semibold">
+              {index + 1}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="text-foreground block text-xs font-semibold">
+                Review and outline candidate
+              </span>
+              <span className="text-muted-foreground mt-0.5 block text-[10.5px]">
+                uncalibrated score {candidate.score.toFixed(3)} · box {largestEdgeMm.toFixed(1)} mm
+              </span>
+            </span>
+            <span className="text-primary text-base transition-transform group-hover:translate-x-0.5">›</span>
+          </button>
+        );
+      })}
+      <div className="text-warning-text text-[10.5px] leading-relaxed">
+        Candidates are places to inspect, not confirmed nodules. Selecting one jumps to its
+        slice and asks MedSAM2 to outline it.
+      </div>
     </div>
   );
 }

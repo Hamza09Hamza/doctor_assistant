@@ -1,8 +1,9 @@
 # MONAI pathology experts: results and methodology
 
-Status: first real results, 2026-08-05. Research evaluation, not a clinical-use
-claim. n=1 for the lung-nodule case; treat as a verified pipeline with one honest
-data point, not a benchmark.
+Status: updated 2026-08-12. Research evaluation, not a clinical-use claim. The
+lung-nodule result now covers all 27 LIDC cases that met the frozen eligibility rule;
+their CT SeriesInstanceUIDs were absent from LUNA16's published 888-series
+`candidates.csv` corpus.
 
 ## Why these two models
 
@@ -50,7 +51,7 @@ the authors' own 200/42/43 split, not published in a form that can be intersecte
 with MSD Task01 case IDs. This number is evidence the pipeline is correct, not
 proof of held-out performance.
 
-## Lung nodule: 99.5%-confidence detection, 0.28mm outside the strict hit radius
+## Lung nodule: 91.3% sensitivity across 27 LIDC scans absent from LUNA16's UID corpus
 
 ### Contamination: the original test case had to be replaced
 
@@ -75,7 +76,7 @@ four readers' primary DICOM SEG data and clusters them into a consensus using
 LUNA16's own documented rule (≥3 of 4 readers must mark overlapping
 segmentations). Result: **4/4 readers independently agreed on one 5.0mm nodule.**
 
-### Result
+### Original single-case diagnostic
 
 At score ≥ 0.3: TP=0, FP=7, FN=1 (sensitivity 0.0) — but the binary count hides
 the real story. The detector's single highest-confidence detection (score 0.995,
@@ -91,12 +92,50 @@ every missed nodule, the nearest detection's distance and how far outside the
 hit radius it landed, so a 0.28mm near-miss and a 200mm total failure are never
 indistinguishable again.
 
-**Contamination status: CLEAN**, with the verification evidence recorded inline
-in the manifest.
+**Known-overlap status:** the CT SeriesInstanceUID is absent from LUNA16's published
+888-series corpus, with the verification evidence recorded inline in the manifest.
+That is a meaningful leakage check, not proof of absence from every upstream/private
+training source.
 
-**n=1.** This establishes the pipeline is real and correctly wired end-to-end —
-not a benchmark result. A statistically meaningful lung-nodule number would need
-several more clean, staged LIDC cases built the same way.
+That first case established that the detector, DICOM geometry, and multi-reader
+ground-truth extraction were wired correctly. It is retained as a useful miss-analysis,
+not the headline result.
+
+### Completed 27-case result
+
+The follow-up batch ran every case discovered by the frozen eligibility rule: exactly
+one CT series, exactly four reader DICOM SEG series, and the CT SeriesInstanceUID absent
+from LUNA16's complete published `candidates.csv` corpus. No case was selected by model
+score. All 27 staged and completed inference successfully at the same fixed score
+threshold (`0.3`).
+
+| Measurement | Result |
+|---|---:|
+| Cases evaluated | 27 |
+| Failed staging / inference | 0 / 0 |
+| Consensus ground-truth nodules | 23 |
+| True positives | 21 |
+| False positives | 58 |
+| False negatives | 2 |
+| Sensitivity | **91.3%** |
+| False positives per scan | **2.15** |
+
+These are aggregate detection counts at one frozen operating point, not a calibrated
+probability of cancer and not a scan-clearance claim. Four evaluated scans contained no
+consensus nodule; the detector still emitted candidates on them, which is why the
+viewer must call its output a shortlist and preserve the false-positive warning.
+
+The complete execution log is embedded in
+`notebooks/build_ohif_bundles_only.ipynb` (batch summary at notebook lines 416-421).
+The run also checkpointed a full JSON manifest to Drive. Recovering that manifest is
+still required before computing patient-bootstrap confidence intervals or a proper
+multi-threshold FROC curve; the headline above does not pretend those analyses exist.
+
+For the viewer demo, `LIDC-IDRI-0117` was selected after the frozen run as a visually
+clean case: one consensus nodule, TP=1, FP=0, FN=0.
+`scripts/prepare_lidc_nodule_detector_demo.py` pins its 122-slice CT and four same-study
+radiologist SEG objects. This one successful scan is a demonstration case only; the
+27-case aggregate is the evidence result.
 
 ## A real methodological lesson: two coordinate bugs, both caught by looking, not by code review
 
@@ -187,10 +226,15 @@ tests, not by `run_monai_pathology_experts.py` itself.
 
 ## Next, if continuing this workstream
 
-1. Stage 2-3 more clean LIDC cases the same way (verify absence from LUNA16,
-   extract multi-reader consensus ground truth) to turn n=1 into a real sample.
-2. Consider reporting a proper FROC curve once there's enough cases for one —
-   a single operating point on one scan can't produce one.
-3. Brain tumour contamination remains UNVERIFIED; resolving it would need the
+1. Recover the saved full 27-case manifest and calculate a multi-threshold FROC/CPM,
+   patient-level bootstrap confidence intervals, and explicit analysis of the two
+   misses. No model rerun is needed if the Drive manifest is intact.
+2. Wire the detector shortlist into OHIF, then let a selected detector candidate seed
+   MedSAM2 refinement. Arbitrary manual boxes remain prompted-structure segmentation
+   and must never be presented as anomaly evidence.
+3. Add hard-negative prompt buckets (normal lung, vessel/bifurcation, pleura/scar,
+   rib/muscle, outside-lung) and report false-accept rate before adding any automatic
+   “supported/unsupported” prompt gate.
+4. Brain tumour contamination remains UNVERIFIED; resolving it would need the
    bundle authors' original BraTS 2018 split in a form intersectable with MSD
    Task01 case IDs, which does not currently exist publicly.

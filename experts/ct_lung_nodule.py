@@ -169,22 +169,27 @@ class LungNoduleDetectorExpert:
         self.class_names = ["pulmonary nodule"]
         self._detector = None  # lazily built and cached on first predict()
 
-    def predict(self, scan: Scan) -> Prediction:
+    @property
+    def is_loaded(self) -> bool:
+        return self._detector is not None
+
+    def preload(self) -> None:
+        """Load and validate the network without running a CT inference pass."""
         import torch
 
+        device = torch.device(
+            self.device_name or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        self._load_detector(device)
+
+    def predict(self, scan: Scan) -> Prediction:
         source_path = scan.meta.source_path
         if not source_path:
             raise ValueError(
                 "LungNoduleDetectorExpert needs scan.meta.source_path -- the on-disk CT "
                 "(NIfTI file or DICOM series directory) with real voxel spacing."
             )
-
-        device = torch.device(
-            self.device_name or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
-        detector = self._load_detector(device)
-        nifti_path = self._ensure_nifti(source_path)
-        detections = self._run_detector(nifti_path, detector, device)
+        detections = self.detect(source_path)
 
         pred = Prediction(expert=self.name, meta=scan.meta)
         # Boxes, not a mask -- see module docstring for why segmentation stays None.
@@ -196,6 +201,22 @@ class LungNoduleDetectorExpert:
         pred.meta.extra = dict(pred.meta.extra or {})
         pred.meta.extra["detections"] = detections
         return pred
+
+    def detect(self, source_path: str | Path) -> list[dict]:
+        """Run the detector directly for spatial API clients.
+
+        ``predict()`` remains the generic pipeline adapter, while the dedicated viewer
+        endpoint needs the raw world-coordinate boxes before they are reduced to
+        report findings.  Both paths deliberately call this one implementation.
+        """
+        import torch
+
+        device = torch.device(
+            self.device_name or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        detector = self._load_detector(device)
+        nifti_path = self._ensure_nifti(source_path)
+        return self._run_detector(nifti_path, detector, device)
 
     def findings_from_prediction(self, scan: Scan, pred: Prediction) -> list[Finding]:
         detections = (pred.meta.extra or {}).get("detections") or []
@@ -284,7 +305,7 @@ class LungNoduleDetectorExpert:
         self._detector = detector.to(device)
         return self._detector
 
-    def _ensure_nifti(self, source_path: str) -> Path:
+    def _ensure_nifti(self, source_path: str | Path) -> Path:
         """Return a NIfTI path for `source_path`, converting a DICOM series directory
         first if needed. See module docstring for why the live API hands this expert a
         DICOM directory rather than a NIfTI file.

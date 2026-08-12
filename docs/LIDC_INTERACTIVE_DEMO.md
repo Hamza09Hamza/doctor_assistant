@@ -1,5 +1,12 @@
 # High-quality LIDC CT demo on Apple Silicon
 
+> This page covers the original local-MLX **segmentation** case. `LIDC-IDRI-0686`
+> appears in the MONAI lung-nodule detector's official fold-0 training list, so it must
+> not be used as independent evidence for that detector. For the automatic
+> detector -> MedSAM2 Colab demo, use `scripts/prepare_lidc_nodule_detector_demo.py`
+> and `docs/COLAB_INFERENCE_SERVER.md`; that path pins `LIDC-IDRI-0117` and records its
+> more limited known-overlap check explicitly.
+
 This demo uses the de-identified `LIDC-IDRI-0686` chest CT from the NCI Imaging
 Data Commons / The Cancer Imaging Archive. It is a 238-slice, 512 x 512 CT with
 0.703125 mm in-plane spacing and 1.25 mm slice thickness. A radiologist DICOM SEG

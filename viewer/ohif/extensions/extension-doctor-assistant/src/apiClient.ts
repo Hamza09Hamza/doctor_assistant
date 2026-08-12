@@ -86,6 +86,22 @@ export interface AnalysisResult extends AnalysisStatus {
   recommendations: RecommendationInfo[];
 }
 
+export interface RuntimeHealth {
+  status: string;
+  mode: string;
+  ready?: boolean;
+  medsam2_configured: boolean;
+  medsam2_loaded?: boolean;
+  model_version: string | null;
+  lung_nodule_detector_configured?: boolean;
+  lung_nodule_detector_loaded?: boolean;
+  lung_nodule_detector_version?: string | null;
+}
+
+export function getRuntimeHealth(): Promise<RuntimeHealth> {
+  return apiFetch('/health');
+}
+
 export function findSeriesByDicomUid(seriesInstanceUid: string): Promise<SeriesInfo> {
   return apiFetch(`/v1/series?dicom_series_uid=${encodeURIComponent(seriesInstanceUid)}`);
 }
@@ -100,6 +116,34 @@ export function submitSeriesAnalysis(seriesId: string): Promise<{ analysis_id: s
 
 export function getAnalysisResult(analysisId: string): Promise<AnalysisResult> {
   return apiFetch(`/v1/analyses/${analysisId}`);
+}
+
+export interface LungNoduleCandidate {
+  score: number;
+  center_lps_mm: [number, number, number];
+  size_whd_mm: [number, number, number];
+  seed_sop_instance_uid: string;
+  box_xyxy: [number, number, number, number];
+}
+
+export interface LungNoduleDetectionResult {
+  series_id: string;
+  model_version: string;
+  min_score: number;
+  source_slice_count: number;
+  detections: LungNoduleCandidate[];
+}
+
+/** Automatic CT candidate generation. A candidate is not a diagnosis. */
+export function detectLungNodules(
+  seriesId: string,
+  minScore?: number
+): Promise<LungNoduleDetectionResult> {
+  return apiFetch(`/v1/series/${seriesId}/detect-lung-nodules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ min_score: minScore }),
+  });
 }
 
 export interface SegmentBoxResult {
@@ -151,7 +195,8 @@ export function segmentVolume(
   seriesId: string,
   sopInstanceUid: string,
   boxXyxy: [number, number, number, number],
-  voi?: { windowCenter: number; windowWidth: number }
+  voi?: { windowCenter: number; windowWidth: number },
+  segmentLabel = 'AI prompted structure'
 ): Promise<SegmentVolumeResult> {
   return apiFetch(`/v1/series/${seriesId}/segment-volume`, {
     method: 'POST',
@@ -161,7 +206,7 @@ export function segmentVolume(
       box_xyxy: boxXyxy,
       // Backend-neutral on purpose: the server may use native SAM2 MLX, a converted
       // MedSAM2 checkpoint, or the official CUDA MedSAM2 runtime.
-      segment_label: 'AI prompted lesion',
+      segment_label: segmentLabel,
       publish_to_orthanc: true,
       window_center: voi?.windowCenter,
       window_width: voi?.windowWidth,

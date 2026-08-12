@@ -11,6 +11,8 @@ import pydicom
 from pydicom.uid import generate_uid
 
 from api.volume_segmentation import (
+    PROMPTED_STRUCTURE_CATEGORY_CODE,
+    PROMPTED_STRUCTURE_TYPE_CODE,
     build_interactive_dicom_seg,
     load_dicom_volume,
     measure_volume,
@@ -26,6 +28,12 @@ except ImportError:
 
 
 class VolumePreparationTests(unittest.TestCase):
+    def test_prompted_structure_codes_do_not_assert_lesion_or_abnormality(self) -> None:
+        self.assertEqual(PROMPTED_STRUCTURE_CATEGORY_CODE, ("85756007", "SCT", "Tissue"))
+        self.assertEqual(PROMPTED_STRUCTURE_TYPE_CODE, ("85756007", "SCT", "Tissue"))
+        self.assertNotEqual(PROMPTED_STRUCTURE_CATEGORY_CODE[0], "49755003")
+        self.assertNotEqual(PROMPTED_STRUCTURE_TYPE_CODE[0], "52988006")
+
     def test_load_tracks_seed_identity_and_physical_measurements(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -145,7 +153,7 @@ class InteractiveDicomSegTests(unittest.TestCase):
                 mask,
                 loaded,
                 output,
-                segment_label="Prompted lesion",
+                segment_label="Prompted structure",
                 model_version="medsam2:test",
             )
 
@@ -159,7 +167,22 @@ class InteractiveDicomSegTests(unittest.TestCase):
                 for item in getattr(seg, "ReferencedSeriesSequence", [])
             }
             self.assertIn(series_uid, referenced)
-            self.assertEqual(str(seg.SegmentSequence[0].SegmentAlgorithmType), "SEMIAUTOMATIC")
+            segment = seg.SegmentSequence[0]
+            self.assertEqual(str(segment.SegmentAlgorithmType), "SEMIAUTOMATIC")
+            category = segment.SegmentedPropertyCategoryCodeSequence[0]
+            property_type = segment.SegmentedPropertyTypeCodeSequence[0]
+            self.assertEqual(
+                (str(category.CodeValue), str(category.CodingSchemeDesignator), str(category.CodeMeaning)),
+                PROMPTED_STRUCTURE_CATEGORY_CODE,
+            )
+            self.assertEqual(
+                (
+                    str(property_type.CodeValue),
+                    str(property_type.CodingSchemeDesignator),
+                    str(property_type.CodeMeaning),
+                ),
+                PROMPTED_STRUCTURE_TYPE_CODE,
+            )
             self.assertGreater(int(seg.NumberOfFrames), 0)
             self.assertTrue(seg.PixelData)
 

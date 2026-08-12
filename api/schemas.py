@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SeriesResponse(BaseModel):
@@ -117,7 +117,9 @@ class SegmentVolumeRequest(BaseModel):
 
     sop_instance_uid: str
     box_xyxy: tuple[float, float, float, float]
-    segment_label: str = "AI prompted lesion"
+    # A prompt-following segmenter outlines a selected structure; it does not decide
+    # whether that structure is abnormal. Keep that distinction in persisted DICOM SEG.
+    segment_label: str = "AI prompted structure"
     publish_to_orthanc: bool = True
     # Optional active OHIF VOI. This is essential for structures such as lung nodules:
     # a CT may store a mediastinal default even while the user is viewing a lung window.
@@ -143,6 +145,33 @@ class SegmentVolumeResponse(BaseModel):
     dicom_seg_sop_instance_uid: str
     orthanc_status: str
     warning: str | None = None
+
+
+class DetectLungNodulesRequest(BaseModel):
+    """Run the configured detector, optionally applying a stricter display threshold.
+
+    The endpoint never permits a caller to lower the detector's evaluated operating
+    point: the effective threshold is the greater of this value and the expert's own
+    configured ``min_score``.
+    """
+
+    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class LungNoduleDetectionResponse(BaseModel):
+    score: float = Field(ge=0.0, le=1.0)
+    center_lps_mm: tuple[float, float, float]
+    size_whd_mm: tuple[float, float, float]
+    seed_sop_instance_uid: str
+    box_xyxy: tuple[int, int, int, int]
+
+
+class DetectLungNodulesResponse(BaseModel):
+    series_id: str
+    model_version: str
+    min_score: float = Field(ge=0.0, le=1.0)
+    source_slice_count: int
+    detections: list[LungNoduleDetectionResponse]
 
 
 class AnalysisResultResponse(BaseModel):

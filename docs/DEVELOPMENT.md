@@ -130,6 +130,15 @@ LIDC case. Two purpose-built MONAI Model Zoo bundles (`brats_mri_segmentation`,
 `docs/MONAI_PATHOLOGY_EXPERTS_RESULTS.md` for full results, methodology, and two real
 coordinate-mapping bugs worth reading before touching this pipeline again.
 
+The completed frozen-threshold batch now covers 27 eligible LIDC CT series: 21/23
+algorithmically derived >=3/4-reader consensus nodules detected (91.3% sensitivity),
+58 false candidates (2.15/scan), and 0 failed runs at detector score threshold 0.3.
+Eligibility required the CT SeriesInstanceUID to be absent from LUNA16's published
+888-series candidates corpus; this is a known-overlap check, not proof of universally
+independent validation. The interactive Colab path now exposes that detector as an
+OHIF shortlist and sends a selected candidate to MedSAM2 for prompt-following outline.
+See `docs/COLAB_INFERENCE_SERVER.md` for the resource-bounded runbook.
+
 ## CT and TotalSegmentator (legacy path, superseded above for pathology detection)
 
 `notebooks/lung_nodule_segmentation_colab.ipynb` on an L4 needs no user-provided

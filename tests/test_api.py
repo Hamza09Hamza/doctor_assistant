@@ -122,6 +122,30 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["body_part"], "chest")
         self.assertEqual(body["source_filename"], "sample.png")
 
+    def test_health_describes_full_api_without_loading_optional_models(self) -> None:
+        client = self._build_client(ExpertRegistry())
+
+        response = client.get("/health")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json(),
+            {
+                "status": "ok",
+                "mode": "full-api",
+                "ready": True,
+                "medsam2_configured": False,
+                "medsam2_loaded": False,
+                "model_version": None,
+                "lung_nodule_detector_configured": False,
+                "lung_nodule_detector_loaded": False,
+                "lung_nodule_detector_version": None,
+                "max_concurrent_inferences": 1,
+                "max_concurrent_volume_inferences": 1,
+                "orthanc_publication": "enabled",
+            },
+        )
+
     def test_analysis_completes_and_matches_pipeline_output(self) -> None:
         registry = ExpertRegistry()
         registry.register(WorkingExpert())

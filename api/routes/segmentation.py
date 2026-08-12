@@ -158,11 +158,15 @@ def segment_volume(
     if not label:
         raise HTTPException(status_code=422, detail="segment_label cannot be empty")
 
-    inference_lock = getattr(request.app.state, "medsam2_lock", None)
+    inference_lock = getattr(
+        request.app.state,
+        "inference_lock",
+        getattr(request.app.state, "medsam2_lock", None),
+    )
     if inference_lock is not None and not inference_lock.acquire(blocking=False):
         raise HTTPException(
             status_code=429,
-            detail="another full-volume inference is already running; retry after it finishes",
+            detail="another inference is already running; retry after it finishes",
         )
     try:
         return _segment_volume_unlocked(

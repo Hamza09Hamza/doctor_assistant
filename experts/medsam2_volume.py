@@ -247,6 +247,14 @@ class MedSAM2VolumeSegmenter:
         self.version = f"medsam2:{self.checkpoint_path.name}"
         self._predictor = None
 
+    @property
+    def is_loaded(self) -> bool:
+        return self._predictor is not None
+
+    def preload(self) -> None:
+        """Build the upstream predictor and load its checkpoint without inference."""
+        self._load_predictor()
+
     def segment_volume(
         self,
         volume,

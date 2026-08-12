@@ -1,10 +1,12 @@
 # Colab GPU inference server through ngrok
 
-This test mode keeps DICOM viewing on the Mac and moves all MedSAM2 Torch inference to
-a Colab GPU runtime:
+This test mode keeps DICOM viewing on the Mac and moves both heavy CT models to one
+Colab GPU runtime:
 
 ```text
-Mac OHIF -> same-origin OHIF proxy -> ngrok HTTPS -> Colab FastAPI -> MedSAM2 GPU
+Mac OHIF -> same-origin OHIF proxy -> ngrok HTTPS -> Colab FastAPI
+                                                       |-> MONAI 3D nodule detector
+                                                       +-> MedSAM2 volume segmenter
     |
     +-> local Orthanc for source DICOM
 ```
@@ -38,11 +40,11 @@ archive and serves it through the already-running ngrok API tunnel. Copy the pri
 terminal. This avoids Colab's unreliable browser-file transfer and does not create a
 second ngrok tunnel.
 
-In another terminal, upload the already prepared LIDC study:
+In another terminal, stage and upload the pinned detector demo:
 
 ```bash
 source .venv-mlx/bin/activate
-python scripts/prepare_lidc_interactive_demo.py --upload-orthanc
+python scripts/prepare_lidc_nodule_detector_demo.py --upload-orthanc
 ```
 
 The upload command prints the LIDC study URL. No local model inference is performed.
@@ -68,11 +70,13 @@ notebook, so the Colab Secrets panel is not required. The notebook:
 1. checks GPU capability and memory before installing or loading the model;
 2. clones this repository's `main` branch;
 3. installs the official MedSAM2 package without building its optional CUDA extension;
-4. downloads only `MedSAM2_CTLesion.pt`, not every upstream checkpoint;
-5. downloads and stages the pinned 238-slice LIDC CT and radiologist SEG;
-6. fetches the Orthanc macOS ZIP once and exposes it at a restricted route on the same
+4. downloads `MedSAM2_CTLesion.pt` and the MONAI `lung_nodule_ct_detection` bundle once;
+5. downloads and stages the pinned 122-slice `LIDC-IDRI-0117` CT plus all four reader
+   DICOM SEG objects;
+6. fetches the Orthanc macOS ZIP once and exposes it at a dedicated route on the same
    ngrok tunnel;
-7. starts one Uvicorn worker and permits only one full-volume request at a time;
+7. starts one Uvicorn worker and gives detection and segmentation one shared inference
+   slot so they cannot overlap;
 8. starts ngrok and prints the public HTTPS API URL plus the Mac installer command.
 
 The token is used to create the ngrok tunnel but is not printed by the notebook.
@@ -87,20 +91,47 @@ bash scripts/start_ohif_with_remote_api.sh https://YOUR-NGROK-DEV-DOMAIN
 
 The launcher verifies `/health`, caps the OHIF Node process at 4 GiB, keeps the local
 Orthanc proxy, and points only the doctor-assistant API proxy at Colab. Open the study
-URL printed by the Orthanc upload step, select **3D Segment (draw box)**, use lung window
-`W 1500 / L -600`, and draw around the nodule on instance 86.
+URL printed by the Orthanc upload step and use lung window `W 1500 / L -600`.
 
-The remote API always writes its DICOM SEG inside the temporary Colab filesystem and
-returns the masks to OHIF. It deliberately reports Orthanc publication as disabled:
-`localhost:8042` inside Colab is not the Mac. A later bridge can download that SEG or
-push it back to local Orthanc after the interactive path is accepted.
+The primary demo is now automatic detection followed by prompted refinement:
+
+1. In the Doctor Assistant panel, click **Scan for nodule candidates**.
+2. Wait for the complete-volume detector pass. The UI intentionally blocks a second
+   heavy request while Colab is working.
+3. Select a candidate. OHIF jumps to its source slice and sends that detector box to
+   MedSAM2 for a full-volume outline.
+4. Inspect the outline against the four radiologist SEG objects in the same study.
+
+The detector produces a review shortlist, not a diagnosis. The completed 27-case run
+found 21/23 consensus nodules at its fixed `0.3` threshold with 2.15 false candidates
+per scan. An empty shortlist does not prove that a scan is clear. Manual **Segment
+structure (tight box)** remains available, but a manual mask is only a prompt-following
+outline and is not evidence that the selected tissue is abnormal.
+
+Expected `/health` fields before opening OHIF are `ready: true`,
+`medsam2_configured: true`, `medsam2_loaded: true`,
+`lung_nodule_detector_configured: true`, `lung_nodule_detector_loaded: true`,
+`max_concurrent_inferences: 1`, and `orthanc_publication: disabled`. “Configured” means
+the API registered both adapters; “loaded” means the Uvicorn subprocess built both
+networks and validated their checkpoints without duplicating them in the notebook
+process. The first real requests remain the end-to-end inference checks.
+
+The remote API writes its DICOM SEG inside the temporary Colab filesystem and returns
+RLE masks that OHIF paints into the current viewer session. It deliberately reports
+Orthanc publication as disabled: `localhost:8042` inside Colab is not the Mac, so the
+new AI overlay does not survive an OHIF reload. The local Orthanc contains the staged
+CT and four reader references only. A later bridge can download that SEG or push it
+back to local Orthanc after the interactive path is accepted.
 
 ## Resource behavior
 
-- The Mac runs OHIF and Orthanc only; it does not import Torch or load MedSAM2.
+- The Mac runs OHIF and Orthanc only; it does not import Torch or load either model.
 - Uvicorn uses one worker.
-- A non-blocking inference lock returns HTTP 429 for overlapping volume requests.
+- A shared non-blocking inference lock returns HTTP 429 if detection and segmentation
+  would overlap.
 - The notebook refuses GPUs older than compute capability 8 or below 18 GiB.
+- Do not point the detector at a local Python runtime on the 16 GiB Mac; this path was
+  deliberately designed to keep Torch/MONAI inference in Colab.
 - Stop the monitoring cell and run the cleanup cell to close ngrok and the API process.
 
 ngrok's HTTPS agent tunnel is outbound-only and receives an automatically managed TLS
@@ -114,4 +145,5 @@ Sources:
 - [ngrok secure tunnels](https://ngrok.com/docs/guides/share-localhost/tunnels)
 - [ngrok free-plan limits](https://ngrok.com/docs/pricing-limits/free-plan-limits)
 - [Google Colab FAQ](https://research.google.com/colaboratory/faq.html)
+- [MONAI lung-nodule detector model card](https://huggingface.co/MONAI/lung_nodule_ct_detection/blob/main/docs/README.md)
 - [Official MedSAM2 installation](https://github.com/bowang-lab/MedSAM2#installation)

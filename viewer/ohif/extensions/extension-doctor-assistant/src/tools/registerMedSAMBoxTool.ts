@@ -2,6 +2,10 @@ import { cache, eventTarget, metaData, utilities as csUtils } from '@cornerstone
 import * as cornerstoneTools from '@cornerstonejs/tools';
 
 import { ApiError, segmentBox, segmentVolume, type SegmentVolumeSlice } from '../apiClient';
+import {
+  LUNG_NODULE_CANDIDATE_SELECTED,
+  type LungNoduleCandidateSelectedDetail,
+} from '../lungNoduleCandidateEvents';
 import { decodeMaskRle } from '../segmentBoxRle';
 import { MedSAMBoxTool } from './MedSAMBoxTool';
 
@@ -74,8 +78,13 @@ export function registerMedSAMBoxTool({ servicesManager, seriesIdForSeriesUid }:
     // already added in a previous mode-enter (addTool throws on a duplicate toolName)
   }
 
-  const { toolGroupService, cornerstoneViewportService, segmentationService, uiNotificationService } =
-    servicesManager.services;
+  const {
+    toolGroupService,
+    viewportGridService,
+    cornerstoneViewportService,
+    segmentationService,
+    uiNotificationService,
+  } = servicesManager.services;
 
   const addToolToGroup = (toolGroupId: string) => {
     const toolGroup = toolGroupService.getToolGroup(toolGroupId);
@@ -105,16 +114,76 @@ export function registerMedSAMBoxTool({ servicesManager, seriesIdForSeriesUid }:
     ({ toolGroupId }: { toolGroupId: string }) => addToolToGroup(toolGroupId)
   );
 
+  let inferenceInProgress = false;
+
   const handleAnnotationCompleted = async (evt: { detail: { annotation: any } }) => {
     const { annotation } = evt.detail;
     if (annotation?.metadata?.toolName !== MedSAMBoxTool.toolName) {
       return;
     }
 
+    if (inferenceInProgress) {
+      uiNotificationService?.show({
+        title: 'MedSAM2 is already working',
+        message: 'Wait for the current Colab segmentation to finish before drawing another box.',
+        type: 'warning',
+        duration: 5000,
+      });
+      return;
+    }
+
+    inferenceInProgress = true;
+    const activeToolGroups = toolGroupService
+      .getToolGroupIds()
+      .map((toolGroupId: string) => toolGroupService.getToolGroup(toolGroupId))
+      .filter(
+        (toolGroup: any) =>
+          toolGroup?.getToolOptions(MedSAMBoxTool.toolName)?.mode === ToolEnums.ToolModes.Active
+      );
+    const activeToolGroupBindings = new Map(
+      activeToolGroups.map((toolGroup: any) => [
+        toolGroup,
+        [...(toolGroup.getToolOptions(MedSAMBoxTool.toolName)?.bindings || [])],
+      ])
+    );
+    activeToolGroups.forEach((toolGroup: any) =>
+      toolGroup.setToolDisabled(MedSAMBoxTool.toolName)
+    );
+    const loadingNotificationId = uiNotificationService?.show({
+      title: 'Segmenting selected structure…',
+      message: 'Colab is processing the CT volume. Please wait; only one prompt runs at a time.',
+      type: 'loading',
+      autoClose: false,
+      allowDuplicates: true,
+    });
+
     try {
-      const referencedImageId: string | undefined = annotation.metadata.referencedImageId;
+      // RectangleROI may omit referencedImageId for a volume viewport even though it
+      // has an exact current source slice. Cornerstone already knows which viewport
+      // owns the annotation from its frame-of-reference and view-plane metadata; use
+      // that public utility, then ask the viewport for its current image instead of
+      // reimplementing slice geometry.
+      const activeViewportId = viewportGridService.getActiveViewportId();
+      const activeViewport = activeViewportId
+        ? cornerstoneViewportService.getCornerstoneViewport(activeViewportId)
+        : undefined;
+      const viewport =
+        cornerstoneTools.utilities.getViewportForAnnotation(annotation) || activeViewport;
+      const firstBoxPoint = annotation.data.handles.points[0];
+      const volumeId = viewport?.getVolumeId?.();
+      const imageVolume = volumeId ? cache.getVolume(volumeId) : undefined;
+      const viewPlaneNormal =
+        annotation.metadata.viewPlaneNormal || viewport?.getCamera?.().viewPlaneNormal;
+      const referencedImageId: string | undefined =
+        annotation.metadata.referencedImageId ||
+        viewport?.getCurrentImageId?.() ||
+        (imageVolume && viewPlaneNormal
+          ? csUtils.getClosestImageId(imageVolume, firstBoxPoint, viewPlaneNormal, {
+              ignoreSpacing: true,
+            })
+          : undefined);
       if (!referencedImageId) {
-        throw new Error('MedSAMBox annotation has no referencedImageId (volume-viewport box drawing is not supported yet)');
+        throw new Error('could not resolve the source slice for the MedSAM2 box');
       }
 
       const instance = metaData.get('instance', referencedImageId);
@@ -129,10 +198,6 @@ export function registerMedSAMBoxTool({ servicesManager, seriesIdForSeriesUid }:
       // cornerstone's own transform rather than re-deriving DICOM orientation math is
       // deliberate: this project has already shipped two real coordinate bugs from
       // hand-rolled ImageOrientationPatient math (see notebooks/HANDOFF.md s3.2).
-      const renderingEngine = cornerstoneViewportService.getRenderingEngine();
-      const viewport = renderingEngine
-        ?.getViewports()
-        .find((vp: any) => vp.getCurrentImageId?.() === referencedImageId);
       if (!viewport) {
         throw new Error('no active viewport is currently displaying the annotated image');
       }
@@ -159,8 +224,13 @@ export function registerMedSAMBoxTool({ servicesManager, seriesIdForSeriesUid }:
       ];
 
       const seriesId = await seriesIdForSeriesUid(seriesInstanceUid);
+      const candidateNumber: number | undefined =
+        annotation.metadata.doctorAssistantCandidateNumber;
+      const candidateScore: number | undefined =
+        annotation.metadata.doctorAssistantCandidateScore;
+      const isDetectorCandidate = Number.isInteger(candidateNumber);
       let masks: SegmentVolumeSlice[];
-      let resultLabel = 'MedSAM2 3D prompted segmentation';
+      let resultLabel = 'MedSAM2 prompted structure';
       let successMessage: string;
       try {
         const voiRange = viewport.getProperties?.().voiRange;
@@ -171,21 +241,36 @@ export function registerMedSAMBoxTool({ servicesManager, seriesIdForSeriesUid }:
                 windowWidth: voiRange.upper - voiRange.lower,
               }
             : undefined;
-        const volumeResult = await segmentVolume(seriesId, sopInstanceUid, boxXyxy, voi);
-        resultLabel = volumeResult.model_version.startsWith('sam2-mlx:')
-          ? 'SAM2 MLX 3D prompted segmentation'
-          : 'MedSAM2 3D prompted segmentation';
+        const volumeResult = await segmentVolume(
+          seriesId,
+          sopInstanceUid,
+          boxXyxy,
+          voi,
+          isDetectorCandidate
+            ? `AI pulmonary nodule candidate ${candidateNumber}`
+            : 'AI prompted structure'
+        );
+        const segmenterName = volumeResult.model_version.startsWith('sam2-mlx:')
+          ? 'SAM2 MLX'
+          : 'MedSAM2';
+        resultLabel = isDetectorCandidate
+          ? `Nodule candidate ${candidateNumber} · ${segmenterName} outline`
+          : `${segmenterName} prompted structure`;
         masks = volumeResult.masks;
         const persistence =
           volumeResult.orthanc_status === 'published'
             ? 'DICOM SEG saved to Orthanc.'
             : volumeResult.orthanc_status === 'failed'
-              ? 'DICOM SEG created locally; Orthanc upload failed.'
-              : 'DICOM SEG created locally.';
-        successMessage =
+              ? 'DICOM SEG created in the API runtime; Orthanc upload failed.'
+              : 'DICOM SEG created in the API runtime.';
+        const candidatePrefix = isDetectorCandidate && Number.isFinite(candidateScore)
+          ? `Uncalibrated detector score ${candidateScore!.toFixed(3)}. `
+          : '';
+        successMessage = candidatePrefix +
           `${volumeResult.segmented_slice_count} slices · ` +
           `${volumeResult.volume_ml.toFixed(2)} mL · ` +
-          `${volumeResult.axial_bbox_diagonal_mm.toFixed(1)} mm axial span. ${persistence}`;
+          `${volumeResult.axial_bbox_diagonal_mm.toFixed(1)} mm axial span. ${persistence} ` +
+          'This mask follows the box prompt; it does not confirm an anomaly.';
       } catch (error) {
         // Keep the already-working 2D path available on machines where the larger
         // MedSAM2 runtime/checkpoint has not yet been installed. Only a capability
@@ -200,8 +285,9 @@ export function registerMedSAMBoxTool({ servicesManager, seriesIdForSeriesUid }:
             mask_rle: sliceResult.mask_rle,
           },
         ];
-        resultLabel = 'MedSAM 2D box segmentation';
-        successMessage = 'MedSAM2 is not configured, so this result covers the selected slice only.';
+        resultLabel = 'MedSAM prompted structure (2D)';
+        successMessage =
+          'This result covers the selected slice only and does not confirm an anomaly.';
       }
 
       const segmentationId = await createLabelmapSegmentationForViewport(
@@ -257,7 +343,7 @@ export function registerMedSAMBoxTool({ servicesManager, seriesIdForSeriesUid }:
       uiNotificationService?.show({
         title: resultLabel,
         message: successMessage,
-        type: masks.length > 1 ? 'success' : 'warning',
+        type: 'warning',
       });
     } catch (error) {
       console.error('MedSAMBoxTool: segmentation failed', error);
@@ -266,14 +352,148 @@ export function registerMedSAMBoxTool({ servicesManager, seriesIdForSeriesUid }:
         message: error instanceof Error ? error.message : String(error),
         type: 'error',
       });
+    } finally {
+      if (loadingNotificationId) {
+        uiNotificationService?.hide(loadingNotificationId);
+      }
+      activeToolGroups.forEach((toolGroup: any) => {
+        // Restore the exact bindings we captured. ToolGroup.setToolMode has a default
+        // empty options object, so calling it with only (name, Active) does not use its
+        // internal restoreToolOptions and would reactivate an unusable, unbound tool.
+        toolGroup.setToolActive(MedSAMBoxTool.toolName, {
+          bindings: activeToolGroupBindings.get(toolGroup) || [],
+        });
+      });
+      inferenceInProgress = false;
+    }
+  };
+
+  const handleCandidateSelected = async (
+    evt: CustomEvent<LungNoduleCandidateSelectedDetail>
+  ) => {
+    const { seriesId: selectedSeriesId, candidate, candidateIndex } = evt.detail;
+    if (inferenceInProgress) {
+      uiNotificationService?.show({
+        title: 'MedSAM2 is already working',
+        message: 'Wait for the current Colab segmentation to finish before selecting another candidate.',
+        type: 'warning',
+        duration: 5000,
+      });
+      return;
+    }
+    const activeViewportId = viewportGridService.getActiveViewportId();
+    const viewport = activeViewportId
+      ? cornerstoneViewportService.getCornerstoneViewport(activeViewportId)
+      : undefined;
+    if (!viewport) {
+      uiNotificationService?.show({
+        title: 'Could not open candidate',
+        message: 'Select the axial CT viewport, then choose the candidate again.',
+        type: 'error',
+      });
+      return;
+    }
+
+    try {
+      const imageIds: string[] = viewport.getImageIds?.() || [];
+      const imageIndex = imageIds.findIndex(imageId => {
+        const instance = metaData.get('instance', imageId);
+        return (
+          instance?.SOPInstanceUID === candidate.seed_sop_instance_uid ||
+          instance?.SopInstanceUID === candidate.seed_sop_instance_uid
+        );
+      });
+      if (imageIndex < 0) {
+        throw new Error('the selected candidate slice is not present in the active CT viewport');
+      }
+
+      if (typeof viewport.jumpToWorld === 'function') {
+        viewport.jumpToWorld(candidate.center_lps_mm);
+        viewport.render?.();
+      } else {
+        await csUtils.jumpToSlice(viewport.element, { imageIndex });
+      }
+      // Volume viewports can keep the same vtk ImageData object across slices. Wait
+      // one animation frame so Cornerstone has applied the requested focal-plane
+      // change before we build and submit the synthetic box annotation.
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      const currentImageId = viewport.getCurrentImageId?.();
+      if (currentImageId) {
+        const currentInstance = metaData.get('instance', currentImageId);
+        const currentSopUid =
+          currentInstance?.SOPInstanceUID || currentInstance?.SopInstanceUID;
+        if (currentSopUid && currentSopUid !== candidate.seed_sop_instance_uid) {
+          throw new Error('viewer did not reach the detector candidate source slice');
+        }
+      }
+      const imageData = viewport.getImageData?.()?.imageData;
+      if (!imageData) {
+        throw new Error('viewport has no imageData for candidate geometry');
+      }
+
+      // Convert the backend's source-pixel box into the same world-point shape a
+      // RectangleROI annotation carries. Reusing the ordinary annotation handler below
+      // keeps candidate and manual prompts on one geometry/painting path.
+      const centerIndex = csUtils.transformWorldToIndex(
+        imageData,
+        candidate.center_lps_mm
+      );
+      const k = centerIndex[2];
+      const [x0, y0, x1, y1] = candidate.box_xyxy;
+      const points = [
+        [x0, y0, k],
+        [x1, y0, k],
+        [x0, y1, k],
+        [x1, y1, k],
+      ].map(index => csUtils.transformIndexToWorld(imageData, index));
+      const camera = viewport.getCamera?.();
+      const referencedImageId = imageIds[imageIndex];
+      const instance = metaData.get('instance', referencedImageId);
+      if (!instance) {
+        throw new Error('candidate source metadata is unavailable after slice navigation');
+      }
+      const activeSeriesUid = instance?.SeriesInstanceUID;
+      if (!activeSeriesUid) {
+        throw new Error('candidate source series metadata is unavailable');
+      }
+      const activeSeriesId = await seriesIdForSeriesUid(activeSeriesUid);
+      if (activeSeriesId !== selectedSeriesId) {
+        throw new Error('the selected candidate belongs to a different active series');
+      }
+
+      await handleAnnotationCompleted({
+        detail: {
+          annotation: {
+            metadata: {
+              toolName: MedSAMBoxTool.toolName,
+              referencedImageId,
+              FrameOfReferenceUID:
+                instance?.FrameOfReferenceUID || viewport.getFrameOfReferenceUID?.(),
+              viewPlaneNormal: camera?.viewPlaneNormal,
+              viewUp: camera?.viewUp,
+              doctorAssistantCandidateNumber: candidateIndex + 1,
+              doctorAssistantCandidateScore: candidate.score,
+            },
+            data: { handles: { points } },
+          },
+        },
+      });
+    } catch (error) {
+      uiNotificationService?.show({
+        title: 'Could not open candidate',
+        message: error instanceof Error ? error.message : String(error),
+        type: 'error',
+      });
     }
   };
 
   eventTarget.addEventListener(ToolEnums.Events.ANNOTATION_COMPLETED, handleAnnotationCompleted);
+  eventTarget.addEventListener(LUNG_NODULE_CANDIDATE_SELECTED, handleCandidateSelected);
 
   return {
     unsubscribe: () => {
       eventTarget.removeEventListener(ToolEnums.Events.ANNOTATION_COMPLETED, handleAnnotationCompleted);
+      eventTarget.removeEventListener(LUNG_NODULE_CANDIDATE_SELECTED, handleCandidateSelected);
       toolGroupCreatedSubscription.unsubscribe();
     },
   };

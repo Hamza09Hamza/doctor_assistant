@@ -243,7 +243,15 @@ product use requires legal confirmation of the weight rights.
 
 ## Metrics and evaluation policy
 
-This repository intentionally does not publish a headline accuracy, AUC, sensitivity, specificity, or combined-system score at this stage.
+This repository does not publish a combined-system or clinical-performance score. It
+does preserve bounded component research results with their exact cohorts and caveats.
+For example, the MONAI CT nodule detector's frozen-threshold 27-series LIDC run detected
+21/23 >=3/4-reader consensus nodules (91.3% sensitivity) with 58 false candidates
+(2.15/scan) at threshold 0.3. Those series UIDs were absent from LUNA16's published
+888-series candidates corpus. This is one small operating-point result without a FROC
+curve or confidence interval—not cancer probability, scan-clearance evidence, or
+combined-system validation. Full methodology is in
+[`docs/MONAI_PATHOLOGY_EXPERTS_RESULTS.md`](docs/MONAI_PATHOLOGY_EXPERTS_RESULTS.md).
 
 A valid metric would require, at minimum:
 

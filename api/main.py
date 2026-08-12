@@ -26,6 +26,7 @@ from .db import Base, build_engine, build_session_factory
 from .orthanc_client import OrthancConfig
 from .registry import build_default_registry
 from .routes.analyses import router as analyses_router
+from .routes.lung_nodule_detection import router as lung_nodule_detection_router
 from .routes.segmentation import router as segmentation_router
 from .routes.series import router as series_router
 from .routes.studies import router as studies_router
@@ -168,10 +169,14 @@ def create_app(
             mlx_model=os.environ.get("MEDSAM2_MLX_MODEL"),
         )
     )
-    # Full-volume inference can consume most of a GPU. Even one Uvicorn worker may
-    # execute several synchronous requests concurrently in its thread pool, so reject
-    # overlap explicitly instead of allowing two model passes to OOM the host/runtime.
-    app.state.medsam2_lock = threading.Lock()
+    # MedSAM2 and the 3D lung-nodule detector can each consume most of a GPU. Even one
+    # Uvicorn worker may execute several synchronous requests concurrently in its
+    # thread pool, so they share one nonblocking inference slot. Keep the legacy state
+    # name as an alias for callers/tests that predate the detector endpoint.
+    app.state.inference_lock = threading.Lock()
+    app.state.medsam2_lock = app.state.inference_lock
+    app.state.runtime_mode = "full-api"
+    app.state.lung_nodule_detector = None
     app.state.disable_orthanc_publication = False
 
     # The OHIF findings panel (viewer/ohif/extensions/extension-doctor-assistant)
@@ -198,10 +203,62 @@ def create_app(
         )
         return response
 
+    @app.get("/health", tags=["runtime"])
+    def health() -> dict:
+        """Expose optional inference capabilities through one base-app contract.
+
+        ``api.colab_server`` changes only app state after constructing this app. Reading
+        that state at request time keeps full and Colab deployments on the same route
+        instead of registering two competing ``GET /health`` handlers.
+        """
+
+        segmenter = getattr(app.state, "medsam2", None)
+        detector = getattr(app.state, "lung_nodule_detector", None)
+        if detector is None:
+            detector = next(
+                (
+                    expert
+                    for expert in app.state.registry.experts()
+                    if getattr(expert, "name", None) == "ct_lung_nodule"
+                ),
+                None,
+            )
+        publication_disabled = bool(
+            getattr(app.state, "disable_orthanc_publication", False)
+        )
+        medsam2_configured = segmenter is not None
+        detector_configured = detector is not None
+        medsam2_loaded = bool(getattr(segmenter, "is_loaded", False))
+        detector_loaded = bool(getattr(detector, "is_loaded", False))
+        runtime_mode = getattr(app.state, "runtime_mode", "full-api")
+        ready = (
+            medsam2_configured
+            and detector_configured
+            and medsam2_loaded
+            and detector_loaded
+            if runtime_mode == "colab-inference-only"
+            else True
+        )
+        return {
+            "status": "ok",
+            "mode": runtime_mode,
+            "ready": ready,
+            "medsam2_configured": medsam2_configured,
+            "medsam2_loaded": medsam2_loaded,
+            "model_version": getattr(segmenter, "version", None),
+            "lung_nodule_detector_configured": detector_configured,
+            "lung_nodule_detector_loaded": detector_loaded,
+            "lung_nodule_detector_version": getattr(detector, "version", None),
+            "max_concurrent_inferences": 1,
+            "max_concurrent_volume_inferences": 1,
+            "orthanc_publication": "disabled" if publication_disabled else "enabled",
+        }
+
     app.include_router(studies_router)
     app.include_router(analyses_router)
     app.include_router(series_router)
     app.include_router(segmentation_router)
+    app.include_router(lung_nodule_detection_router)
     return app
 
 
