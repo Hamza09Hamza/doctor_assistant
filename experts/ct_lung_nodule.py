@@ -76,6 +76,11 @@ LUNG_NODULE_REPORTED_MAR = 0.998
 # selector keeps candidates down to score_thresh=0.02; this is the higher bar findings
 # are actually filtered at.
 LUNG_NODULE_SCORE_THRESHOLD = 0.3
+LUNG_NODULE_BUNDLE_VERSION = "0.6.10"
+LUNG_NODULE_CHECKPOINT_SHA256 = (
+    "b5e79231466adae93a6fe8e8594029e9add142914e223b879aa0343bb2402d01"
+)
+LUNG_NODULE_PREPROCESSING_VERSION = "ras-0.703125x0.703125x1.25-hu--1024-300-v1"
 
 
 def findings_from_detections(
@@ -165,7 +170,13 @@ class LungNoduleDetectorExpert:
             if cache_dir is not None
             else Path(tempfile.gettempdir()) / "doctor_assistant_ct_lung_nodule"
         )
-        self.version = f"{LUNG_NODULE_BUNDLE_NAME}:monai-model-zoo"
+        self.version = f"{LUNG_NODULE_BUNDLE_NAME}:{LUNG_NODULE_BUNDLE_VERSION}"
+        # These identifiers are part of the durable candidate-run cache key. They
+        # match the pinned Colab bundle/checkpoint and the transform chain below, so
+        # changing weights or preprocessing cannot silently reuse stale boxes.
+        self.bundle_version = LUNG_NODULE_BUNDLE_VERSION
+        self.checkpoint_sha256 = LUNG_NODULE_CHECKPOINT_SHA256
+        self.preprocessing_version = LUNG_NODULE_PREPROCESSING_VERSION
         self.class_names = ["pulmonary nodule"]
         self._detector = None  # lazily built and cached on first predict()
 
@@ -249,13 +260,27 @@ class LungNoduleDetectorExpert:
         from monai.networks.nets.resnet import resnet50
 
         bundle_dir = self.bundle_root / LUNG_NODULE_BUNDLE_NAME
-        if not (bundle_dir / "models" / "model.pt").is_file():
+        checkpoint_path = bundle_dir / "models" / "model.pt"
+        if not checkpoint_path.is_file():
             self.bundle_root.mkdir(parents=True, exist_ok=True)
-            download(name=LUNG_NODULE_BUNDLE_NAME, bundle_dir=str(self.bundle_root))
-        if not (bundle_dir / "models" / "model.pt").is_file():
+            download(
+                name=LUNG_NODULE_BUNDLE_NAME,
+                version=LUNG_NODULE_BUNDLE_VERSION,
+                bundle_dir=str(self.bundle_root),
+            )
+        if not checkpoint_path.is_file():
             raise RuntimeError(
                 f"bundle '{LUNG_NODULE_BUNDLE_NAME}' downloaded but models/model.pt is "
                 f"missing at {bundle_dir}"
+            )
+        digest = hashlib.sha256()
+        with checkpoint_path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != LUNG_NODULE_CHECKPOINT_SHA256:
+            raise RuntimeError(
+                "lung-nodule checkpoint SHA-256 does not match the pinned "
+                f"bundle {LUNG_NODULE_BUNDLE_VERSION}"
             )
 
         anchor_generator = AnchorGeneratorWithAnchorShape(
@@ -275,9 +300,7 @@ class LungNoduleDetectorExpert:
             use_list_output=False,
         ).to(device)
 
-        checkpoint = torch.load(
-            bundle_dir / "models" / "model.pt", map_location="cpu", weights_only=False
-        )
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
         network.load_state_dict(state)
         network.eval()

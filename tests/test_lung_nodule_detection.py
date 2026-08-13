@@ -153,13 +153,13 @@ class LungNoduleDetectionRouteTests(unittest.TestCase):
         self.series_dir = root / "series"
         self.series_dir.mkdir()
         self.series_uid = generate_uid()
-        frame_uid = generate_uid()
+        self.frame_uid = generate_uid()
         self.sop_uids = [generate_uid() for _ in range(3)]
         for uid, position in zip(self.sop_uids, (0.0, 5.0, 10.0), strict=True):
             _write_geometry_dicom(
                 self.series_dir,
                 series_uid=self.series_uid,
-                frame_uid=frame_uid,
+                frame_uid=self.frame_uid,
                 sop_uid=uid,
                 z_position=position,
             )
@@ -217,6 +217,13 @@ class LungNoduleDetectionRouteTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["series_id"], self.series_id)
         self.assertEqual(body["model_version"], self.detector.version)
+        self.assertEqual(body["cache_status"], "miss")
+        self.assertEqual(len(body["run_id"]), 32)
+        self.assertGreaterEqual(body["elapsed_ms"], 0)
+        self.assertRegex(body["generated_at"], r"^\d{4}-\d{2}-\d{2}T")
+        self.assertRegex(body["source_fingerprint"], r"^sha256:[0-9a-f]{64}$")
+        self.assertRegex(body["model_fingerprint"], r"^sha256:[0-9a-f]{64}$")
+        self.assertRegex(body["cache_key"], r"^[0-9a-f]{64}$")
         self.assertEqual(body["min_score"], 0.3)
         self.assertEqual(body["source_slice_count"], 3)
         self.assertEqual([item["score"] for item in body["detections"]], [0.9, 0.6])
@@ -224,11 +231,133 @@ class LungNoduleDetectionRouteTests(unittest.TestCase):
             body["detections"][0]["seed_sop_instance_uid"], self.sop_uids[1]
         )
         self.assertEqual(body["detections"][0]["box_xyxy"], [7, 10, 13, 14])
+        self.assertRegex(
+            body["detections"][0]["candidate_id"],
+            r"^candidate-[0-9a-f]{24}$",
+        )
         self.assertEqual(
             body["detections"][1]["seed_sop_instance_uid"], self.sop_uids[2]
         )
         self.assertEqual(body["detections"][1]["box_xyxy"], [0, 26, 2, 32])
         self.assertEqual(self.detector.calls, [self.series_dir])
+
+    def test_repeated_request_is_a_durable_cache_hit(self) -> None:
+        first = self.client.post(
+            f"/v1/series/{self.series_id}/detect-lung-nodules",
+            json={},
+        )
+        # Cache reads do not consume the single shared inference slot.
+        self.app.state.inference_lock.acquire()
+        try:
+            second = self.client.post(
+                f"/v1/series/{self.series_id}/detect-lung-nodules",
+                json={},
+            )
+        finally:
+            self.app.state.inference_lock.release()
+
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        first_body = first.json()
+        second_body = second.json()
+        self.assertEqual(first_body["cache_status"], "miss")
+        self.assertEqual(second_body["cache_status"], "hit")
+        self.assertEqual(second_body["run_id"], first_body["run_id"])
+        self.assertEqual(second_body["generated_at"], first_body["generated_at"])
+        self.assertEqual(second_body["detections"], first_body["detections"])
+        self.assertEqual(self.detector.calls, [self.series_dir])
+
+        cache_files = list(
+            (self.series_dir / "derived" / "lung-nodule-detection").glob("v1-*.json")
+        )
+        self.assertEqual(len(cache_files), 1)
+
+    def test_force_creates_a_new_run_without_changing_candidate_identity(self) -> None:
+        first = self.client.post(
+            f"/v1/series/{self.series_id}/detect-lung-nodules",
+            json={},
+        )
+        forced = self.client.post(
+            f"/v1/series/{self.series_id}/detect-lung-nodules",
+            json={"force": True},
+        )
+
+        self.assertEqual(forced.status_code, 200, forced.text)
+        self.assertEqual(forced.json()["cache_status"], "miss")
+        self.assertNotEqual(forced.json()["run_id"], first.json()["run_id"])
+        self.assertEqual(
+            [item["candidate_id"] for item in forced.json()["detections"]],
+            [item["candidate_id"] for item in first.json()["detections"]],
+        )
+        self.assertEqual(self.detector.calls, [self.series_dir, self.series_dir])
+
+    def test_latest_recovers_last_run_and_is_404_before_first_run(self) -> None:
+        latest_url = f"/v1/series/{self.series_id}/detect-lung-nodules/latest"
+        self.assertEqual(self.client.get(latest_url).status_code, 404)
+
+        generated = self.client.post(
+            f"/v1/series/{self.series_id}/detect-lung-nodules",
+            json={},
+        )
+        # Recovery does not trust the pointer exclusively: a worker can stop between
+        # committing an entry and updating latest.json.
+        latest_pointer = (
+            self.series_dir
+            / "derived"
+            / "lung-nodule-detection"
+            / "latest.json"
+        )
+        latest_pointer.write_text("{broken", encoding="utf-8")
+        latest = self.client.get(latest_url)
+
+        self.assertEqual(latest.status_code, 200, latest.text)
+        self.assertEqual(latest.json()["cache_status"], "hit")
+        self.assertEqual(latest.json()["run_id"], generated.json()["run_id"])
+        self.assertEqual(self.detector.calls, [self.series_dir])
+
+        self.detector.version = "fake-lung-detector:upgraded"
+        self.assertEqual(self.client.get(latest_url).status_code, 404)
+
+    def test_threshold_reuses_raw_run_while_model_and_source_invalidate_cache(self) -> None:
+        endpoint = f"/v1/series/{self.series_id}/detect-lung-nodules"
+        first = self.client.post(endpoint, json={})
+        tightened = self.client.post(endpoint, json={"min_score": 0.7})
+        self.detector.version = "fake-lung-detector:next"
+        changed_model = self.client.post(endpoint, json={})
+
+        added_sop_uid = generate_uid()
+        _write_geometry_dicom(
+            self.series_dir,
+            series_uid=self.series_uid,
+            frame_uid=self.frame_uid,
+            sop_uid=added_sop_uid,
+            z_position=15.0,
+        )
+        changed_source = self.client.post(endpoint, json={})
+
+        for response in (first, tightened, changed_model, changed_source):
+            self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(first.json()["cache_status"], "miss")
+        self.assertEqual(tightened.json()["cache_status"], "hit")
+        self.assertEqual(changed_model.json()["cache_status"], "miss")
+        self.assertEqual(changed_source.json()["cache_status"], "miss")
+        self.assertEqual(first.json()["cache_key"], tightened.json()["cache_key"])
+        self.assertEqual(first.json()["model_fingerprint"], tightened.json()["model_fingerprint"])
+        self.assertEqual(tightened.json()["run_id"], first.json()["run_id"])
+        self.assertEqual(
+            [item["score"] for item in tightened.json()["detections"]],
+            [0.9],
+        )
+        self.assertNotEqual(
+            first.json()["model_fingerprint"],
+            changed_model.json()["model_fingerprint"],
+        )
+        self.assertNotEqual(
+            changed_model.json()["source_fingerprint"],
+            changed_source.json()["source_fingerprint"],
+        )
+        self.assertEqual(changed_source.json()["source_slice_count"], 4)
+        self.assertEqual(len(self.detector.calls), 3)
 
     def test_request_can_only_tighten_configured_threshold(self) -> None:
         response = self.client.post(

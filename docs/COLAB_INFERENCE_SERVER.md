@@ -89,23 +89,29 @@ Copy the printed ngrok URL and run on the Mac:
 bash scripts/start_ohif_with_remote_api.sh https://YOUR-NGROK-DEV-DOMAIN
 ```
 
-The launcher verifies `/health`, caps the OHIF Node process at 4 GiB, keeps the local
+The launcher verifies `/health`, caps the OHIF Node process at 2 GiB, keeps the local
 Orthanc proxy, and points only the doctor-assistant API proxy at Colab. Open the study
 URL printed by the Orthanc upload step and use lung window `W 1500 / L -600`.
 
-The primary demo is now automatic detection followed by prompted refinement:
+The primary demo is a deliberate three-stage clinician review:
 
-1. In the Doctor Assistant panel, click **Scan for nodule candidates**.
+1. In the AI Review panel, click **Find nodule candidates**.
 2. Wait for the complete-volume detector pass. The UI intentionally blocks a second
    heavy request while Colab is working.
-3. Select a candidate. OHIF jumps to its source slice and sends that detector box to
-   MedSAM2 for a full-volume outline.
-4. Inspect the outline against the four radiologist SEG objects in the same study.
+3. Select a candidate. OHIF jumps to its source slice without starting another model,
+   so the location can be inspected first.
+4. Click **Generate 3D outline** only after inspecting the source image.
+5. Review the persistent measurements and the prompt-matched >=3-of-4-reader consensus
+   Dice/volume. Open **Compare overlays** to use OHIF's segmentation visibility controls.
+6. Choose **Supported**, **Dismiss mark**, or **Uncertain** as a session-only review
+   disposition. This records how the doctor handled false candidates; it is not a diagnosis.
+7. Click **Save DICOM SEG to case** to copy the generated standards-valid object from
+   Colab into the Mac's local Orthanc. Reload the study once to hydrate that durable copy.
 
 The detector produces a review shortlist, not a diagnosis. The completed 27-case run
 found 21/23 consensus nodules at its fixed `0.3` threshold with 2.15 false candidates
-per scan. An empty shortlist does not prove that a scan is clear. Manual **Segment
-structure (tight box)** remains available, but a manual mask is only a prompt-following
+per scan. An empty shortlist does not prove that a scan is clear. Manual **Refine with
+box** remains available, but a manual mask is only a prompt-following
 outline and is not evidence that the selected tissue is abnormal.
 
 Expected `/health` fields before opening OHIF are `ready: true`,
@@ -116,12 +122,12 @@ the API registered both adapters; “loaded” means the Uvicorn subprocess buil
 networks and validated their checkpoints without duplicating them in the notebook
 process. The first real requests remain the end-to-end inference checks.
 
-The remote API writes its DICOM SEG inside the temporary Colab filesystem and returns
-RLE masks that OHIF paints into the current viewer session. It deliberately reports
-Orthanc publication as disabled: `localhost:8042` inside Colab is not the Mac, so the
-new AI overlay does not survive an OHIF reload. The local Orthanc contains the staged
-CT and four reader references only. A later bridge can download that SEG or push it
-back to local Orthanc after the interactive path is accepted.
+The remote API writes its DICOM SEG inside the temporary Colab filesystem, returns RLE
+masks for immediate OHIF painting, and exposes the exact DICOM bytes through a
+series-bound artifact endpoint with SHA-256 metadata. It deliberately reports direct
+Orthanc publication as disabled: `localhost:8042` inside Colab is not the Mac. The
+viewer therefore downloads the object through its remote API proxy and POSTs it through
+the separate local-Orthanc REST proxy only when **Save DICOM SEG to case** is selected.
 
 ## Resource behavior
 

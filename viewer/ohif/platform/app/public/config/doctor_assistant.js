@@ -37,16 +37,13 @@ window.config = {
     days: 30,
   },
 
-  // Clinique Amina wordmark + monogram, replacing OHIF's default logo in the
+  // Clinique Amina scan-aperture mark, replacing OHIF's default logo in the
   // WorkList toolbar — the sanctioned whiteLabeling extension point
   // (WorkList.tsx reads this directly), no core edit needed. Plain
   // React.createElement (not JSX): this file is loaded as a raw <script>, not
   // run through a JSX transform — see the commented example this follows in
-  // config/kheops.js. font-serif resolves to Playfair Display
-  // (tailwind.config.js + the Google Fonts link in html-templates/index.html);
-  // the gold-ringed monogram matches the same mark used at the top of the
-  // findings panel (DoctorAssistantPanel.tsx's PanelBrandHeader) so the two
-  // don't read as two different products.
+  // config/kheops.js. The same functional scan/pulse mark leads the clinical
+  // review rail, so WorkList and viewer read as one product.
   whiteLabeling: {
     createLogoComponentFn: function (React) {
       return React.createElement(
@@ -61,12 +58,22 @@ window.config = {
           'span',
           {
             className:
-              'border-accent bg-secondary text-primary shadow-brand-sm flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2',
+              'border-primary/60 bg-primary/10 text-primary flex h-9 w-9 shrink-0 items-center justify-center rounded-md border',
           },
           React.createElement(
-            'span',
-            { className: 'font-serif text-sm font-bold' },
-            'A'
+            'svg',
+            {
+              viewBox: '0 0 32 32',
+              role: 'presentation',
+              className: 'h-6 w-6 fill-none stroke-current',
+              fill: 'none',
+              stroke: 'currentColor',
+              strokeWidth: 1.5,
+              strokeLinecap: 'round',
+              strokeLinejoin: 'round',
+            },
+            React.createElement('path', { d: 'M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5' }),
+            React.createElement('path', { d: 'M8 16h5l2-4 3 8 2-4h4' })
           )
         ),
         React.createElement(
@@ -74,13 +81,13 @@ window.config = {
           { className: 'flex flex-col leading-tight' },
           React.createElement(
             'span',
-            { className: 'font-serif text-foreground text-[15px] font-semibold tracking-tight' },
+            { className: 'text-foreground text-[14px] font-semibold tracking-tight' },
             'Clinique Amina'
           ),
           React.createElement(
             'span',
-            { className: 'text-muted-foreground text-[10.5px] tracking-wide uppercase' },
-            'AI Imaging Review'
+            { className: 'text-muted-foreground text-xs tracking-wide' },
+            'Clinical imaging workspace'
           )
         )
       );

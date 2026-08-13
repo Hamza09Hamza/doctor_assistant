@@ -243,6 +243,10 @@ class MedSAM2VolumeSegmenter:
         self.model_config = model_config
         self.device_name = device
         self.image_size = int(image_size)
+        # Keep the established keyword/property for compatibility with existing
+        # launch configuration.  Cleanup is now prompt-anchored rather than globally
+        # largest: the latter can preserve a remote hallucination and discard the
+        # structure the clinician actually boxed.
         self.keep_largest_component = keep_largest_component
         self.version = f"medsam2:{self.checkpoint_path.name}"
         self._predictor = None
@@ -316,9 +320,13 @@ class MedSAM2VolumeSegmenter:
 
         if not masks.any():
             raise ValueError("MedSAM2 returned an empty mask for the supplied box")
-        if self.keep_largest_component:
-            masks = largest_connected_component(masks)
-        return masks
+        return self._postprocess_masks(masks, seed_index=seed_index, box_xyxy=box)
+
+    def _postprocess_masks(self, masks, *, seed_index: int, box_xyxy):
+        """Apply the optional 3D cleanup without losing the prompted structure."""
+        if not self.keep_largest_component:
+            return masks
+        return prompt_connected_component(masks, seed_index, box_xyxy)
 
     @staticmethod
     def _add_box(predictor, inference_state, seed_index: int, box) -> None:

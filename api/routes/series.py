@@ -22,7 +22,13 @@ def find_series_by_dicom_uid(dicom_series_uid: str, db: Session = Depends(get_db
     """Resolve a DICOM SeriesInstanceUID (what the OHIF panel actually has on hand) to
     our internal series row."""
     series = db.execute(
-        select(Series).where(Series.dicom_series_uid == dicom_series_uid)
+        select(Series)
+        .where(Series.dicom_series_uid == dicom_series_uid)
+        # New imports are idempotent.  The limit also keeps databases created by an
+        # older release (which may already contain duplicate rows) usable instead of
+        # raising MultipleResultsFound from scalar_one_or_none().
+        .order_by(Series.created_at.desc(), Series.id.desc())
+        .limit(1)
     ).scalar_one_or_none()
     if series is None:
         raise HTTPException(

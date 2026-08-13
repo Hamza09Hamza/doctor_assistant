@@ -21,6 +21,7 @@ module.exports = {
   theme: {
     fontFamily: {
       sans: [
+        '"IBM Plex Sans"',
         'Inter',
         'system-ui',
         '-apple-system',
@@ -36,14 +37,11 @@ module.exports = {
         '"Segoe UI Symbol"',
         '"Noto Color Emoji"',
       ],
-      // Clinique Amina brand serif (headings/wordmark) — this file, not
-      // ../ui-next/tailwind.config.js, is the actual final Tailwind config
-      // (the app's own `theme.fontFamily` fully overrides its presets, since
-      // it isn't nested under `extend`), so the same edit made there alone
-      // was silently shadowed. Font loaded via Google Fonts in
-      // platform/app/public/html-templates/index.html.
-      serif: ['"Playfair Display"', 'Georgia', 'Cambria', '"Times New Roman"', 'Times', 'serif'],
-      mono: ['Menlo', 'Monaco', 'Consolas', '"Liberation Mono"', '"Courier New"', 'monospace'],
+      // A diagnostic workspace needs one neutral interface family, not a
+      // decorative display face. Keep `serif` mapped to the clinical sans so
+      // inherited stock classes cannot reintroduce boutique typography.
+      serif: ['"IBM Plex Sans"', 'Inter', 'system-ui', 'sans-serif'],
+      mono: ['"IBM Plex Mono"', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
     },
     fontSize: {
       xxs: '0.625rem', // 10px

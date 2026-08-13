@@ -232,6 +232,19 @@ class ApiTests(unittest.TestCase):
         missing = client.get("/v1/series", params={"dicom_series_uid": "no.such.uid"})
         self.assertEqual(missing.status_code, 404)
 
+    def test_series_lookup_tolerates_legacy_duplicate_rows(self) -> None:
+        client = self._build_client(ExpertRegistry())
+        first = self._insert_series(dicom_series_uid="1.2.3.4.legacy")
+        second = self._insert_series(dicom_series_uid="1.2.3.4.legacy")
+
+        found = client.get(
+            "/v1/series",
+            params={"dicom_series_uid": "1.2.3.4.legacy"},
+        )
+
+        self.assertEqual(found.status_code, 200, found.text)
+        self.assertIn(found.json()["id"], {first.id, second.id})
+
     def test_series_analyses_list_reflects_submitted_runs(self) -> None:
         registry = ExpertRegistry()
         registry.register(WorkingExpert())

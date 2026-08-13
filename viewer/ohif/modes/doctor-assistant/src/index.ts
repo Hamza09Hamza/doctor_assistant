@@ -6,16 +6,15 @@ import {
   modeInstance as basicModeInstance,
   basicLayout,
   cornerstone,
-  defaultActivatePanelTriggers,
   extensionDependencies as baseExtensionDependencies,
 } from '@ohif/mode-basic';
 
 /**
  * Extends @ohif/mode-basic the way modes/basic-test-mode/src/index.ts does
  * (object-spread over the real basicModeInstance), plus UI/UX simplification for
- * this product's actual audience (general/non-specialist, not radiologists — see
- * the redesign plan): a trimmed toolbar, relabeled controls, a cleaner viewport
- * overlay, plus focused findings and read-only anatomy-segmentation surfaces.
+ * this product's actual audience: clinicians reviewing imaging evidence. The
+ * viewport remains dominant while a persistent Detect -> Inspect -> Compare rail
+ * carries the AI workflow.
  */
 const doctorAssistantPanel = {
   findings: '@doctor-assistant/extension-doctor-assistant.panelModule.findingsPanel',
@@ -37,6 +36,10 @@ export const doctorAssistantLayout = {
     // clinical contours.
     rightPanels: [doctorAssistantPanel.findings, cornerstone.segmentation],
     rightPanelClosed: false,
+    rightPanelResizable: true,
+    rightPanelInitialExpandedWidth: 376,
+    rightPanelMinimumExpandedWidth: 336,
+    leftPanelClosed: true,
   },
 };
 
@@ -50,15 +53,15 @@ export const modeInstance = {
   ...basicModeInstance,
   id,
   routeName: 'doctor-assistant',
-  displayName: 'Doctor Assistant',
+  displayName: 'Chest CT AI Review',
   hide: false,
   isValidMode,
   routes: [doctorAssistantRoute],
   extensions: extensionDependencies,
-  // When a DICOM SEG is hydrated, take the user straight to the anatomy list
-  // where labels can be toggled.  Measurement activation remains intentionally
-  // absent because this mode does not expose the measurement panel.
-  activatePanelTriggers: [defaultActivatePanelTriggers[0]],
+  // Keep the review rail visible when DICOM SEG objects hydrate. The doctor can
+  // deliberately open the comparison panel from the final workflow step without
+  // losing candidate/result context mid-review.
+  activatePanelTriggers: [],
   // Composes a second pack on top of basic's `[{ $reference: 'cornerstone.toolbarSections' }]`
   // (packs merge by Object.assign in order, later keys win) rather than patching
   // `toolbarSections.primary` via a modeCustomizations $set — that specific path is a
@@ -70,19 +73,19 @@ export const modeInstance = {
   toolbarSections: [
     { $reference: 'cornerstone.toolbarSections' },
     {
-      // MeasurementTools dropped: caliper/angle/ROI tools need clinical training a lay
-      // user doesn't have, and keeping them next to "AI Findings" creates two competing
-      // "what do I do here" surfaces — the single highest-leverage cut for this audience.
-      // TrackballRotate/Crosshairs dropped: volumetric/MPR-only, meaningless for 2D
-      // chest X-ray review. Capture dropped for v1 minimalism (trivial to re-add).
-      // MedSAMBox is the deliberate exception to "no clinical tools for lay users": it's
-      // not a measurement/caliper tool requiring training, it's a guided "draw a box
-      // around what looks wrong, AI outlines it, review the result" interaction — closer
-      // to an assistive annotation than a manual ROI tool (see
-      // extensions/extension-doctor-assistant/src/tools/registerMedSAMBoxTool.ts).
-      primary: ['WindowLevel', 'Zoom', 'Pan', 'MedSAMBox', 'Layout', 'MoreTools'],
-      // Trimmed to basic image manipulation only — drops TagBrowser (raw DICOM tag
-      // browser), Probe, Cine, angle/calibration tools, StackScroll, etc.
+      // Clinical essentials stay visible and use their conventional names. The
+      // specialized AI action remains one deliberate control rather than another
+      // generic measurement dropdown item.
+      primary: [
+        'WindowLevel',
+        'Zoom',
+        'Pan',
+        'StackScroll',
+        'MeasurementTools',
+        'MedSAMBox',
+        'Layout',
+        'MoreTools',
+      ],
       MoreTools: ['Reset', 'rotate-right', 'flipHorizontal', 'invert', 'Magnify'],
     },
   ],

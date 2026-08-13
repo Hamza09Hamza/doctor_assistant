@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 from pydicom.dataset import FileDataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
+from sqlalchemy import func, select
 
 from api import dicom_ingest, persistence
 from api.db import Base, build_engine, build_session_factory
@@ -181,6 +182,126 @@ class DicomIngestTests(unittest.TestCase):
         self.assertEqual(
             study.patient_reference,
             dicom_ingest._pseudonymous_patient_reference("TESTPAT1"),
+        )
+
+    def test_reimport_reuses_study_and_series_rows_and_refreshes_metadata(self) -> None:
+        study_uid = generate_uid()
+        series_uid = generate_uid()
+        first_client = FakeOrthancClient(
+            study_uid=study_uid,
+            patient_id="TESTPAT1",
+            series={
+                series_uid: (
+                    "CR",
+                    [
+                        _build_dicom_bytes(study_uid=study_uid, series_uid=series_uid),
+                        _build_dicom_bytes(study_uid=study_uid, series_uid=series_uid),
+                    ],
+                )
+            },
+        )
+        first = dicom_ingest.import_study_from_orthanc(
+            self.db,
+            storage_dir=self.storage_dir,
+            orthanc_client=first_client,
+            study_instance_uid=study_uid,
+        )
+        first_study_id = first.id
+        first_series_id = first.series[0].id
+
+        second_client = FakeOrthancClient(
+            study_uid=study_uid,
+            patient_id="TESTPAT2",
+            series={
+                series_uid: (
+                    "CT",
+                    [
+                        _build_dicom_bytes(
+                            study_uid=study_uid,
+                            series_uid=series_uid,
+                            modality="CT",
+                        )
+                    ],
+                )
+            },
+        )
+        second = dicom_ingest.import_study_from_orthanc(
+            self.db,
+            storage_dir=self.storage_dir,
+            orthanc_client=second_client,
+            study_instance_uid=study_uid,
+        )
+
+        self.assertEqual(second.id, first_study_id)
+        self.assertEqual(second.series[0].id, first_series_id)
+        self.assertEqual(second.patient_reference, dicom_ingest._pseudonymous_patient_reference("TESTPAT2"))
+        self.assertEqual(second.series[0].dicom_modality, "CT")
+        self.assertEqual(second.series[0].modality, Modality.CT.value)
+        self.assertEqual(second.series[0].instance_count, 1)
+        self.assertEqual(
+            len(list(Path(second.series[0].storage_dir).glob("instance_*.dcm"))),
+            1,
+        )
+        self.assertEqual(
+            self.db.scalar(select(func.count()).select_from(Study)),
+            1,
+        )
+        self.assertEqual(
+            self.db.scalar(select(func.count()).select_from(Series)),
+            1,
+        )
+
+    def test_empty_refresh_preserves_last_known_good_series(self) -> None:
+        study_uid = generate_uid()
+        series_uid = generate_uid()
+        initial_client = FakeOrthancClient(
+            study_uid=study_uid,
+            patient_id="TESTPAT1",
+            series={
+                series_uid: (
+                    "CR",
+                    [
+                        _build_dicom_bytes(study_uid=study_uid, series_uid=series_uid),
+                        _build_dicom_bytes(study_uid=study_uid, series_uid=series_uid),
+                    ],
+                )
+            },
+        )
+        study = dicom_ingest.import_study_from_orthanc(
+            self.db,
+            storage_dir=self.storage_dir,
+            orthanc_client=initial_client,
+            study_instance_uid=study_uid,
+        )
+        series = study.series[0]
+        original_files = {
+            path.name: path.read_bytes()
+            for path in Path(series.storage_dir).glob("instance_*.dcm")
+        }
+
+        empty_client = FakeOrthancClient(
+            study_uid=study_uid,
+            patient_id="TESTPAT2",
+            series={series_uid: ("CR", [])},
+        )
+        with self.assertRaisesRegex(ValueError, "has no instances"):
+            dicom_ingest.import_study_from_orthanc(
+                self.db,
+                storage_dir=self.storage_dir,
+                orthanc_client=empty_client,
+                study_instance_uid=study_uid,
+            )
+        self.db.rollback()
+        self.db.expire_all()
+
+        refreshed = self.db.get(Series, series.id)
+        self.assertEqual(refreshed.instance_count, 2)
+        self.assertEqual(
+            {
+                path.name: path.read_bytes()
+                for path in Path(refreshed.storage_dir).glob("instance_*.dcm")
+            },
+            original_files,
         )
 
     def test_unmapped_modality_is_recorded_but_ineligible(self) -> None:

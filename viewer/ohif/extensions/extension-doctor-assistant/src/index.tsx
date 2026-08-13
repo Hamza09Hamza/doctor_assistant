@@ -4,15 +4,17 @@ import getPanelModule from './getPanelModule';
 import getCustomizationModule from './getCustomizationModule';
 import { findSeriesByDicomUid } from './apiClient';
 import registerMedSAMBoxTool from './tools/registerMedSAMBoxTool';
+import registerReviewWorkflowEvents from './registerReviewWorkflowEvents';
+import './clinicalConsole.css';
 
 let unregisterMedSAMBoxTool: (() => void) | undefined;
+let unregisterReviewWorkflowEvents: (() => void) | undefined;
 
 /**
  * Candidate-findings panel for doctor_assistant. Talks to the API (see
  * ../../../../../api/) over plain fetch() — see apiClient.ts. No custom viewport,
  * commands, or hanging-protocol behavior needed for this slice; just the panel and
- * a couple of WorkList customizations (getCustomizationModule.tsx) for a
- * general/non-specialist audience.
+ * a clinician-focused review rail plus WorkList/toolbar customizations.
  */
 const doctorAssistantExtension = {
   id,
@@ -53,7 +55,10 @@ const doctorAssistantExtension = {
   // the mode re-registers idempotently (addTool/toolGroup.addTool both guard against
   // duplicates internally); the previous listener is torn down first regardless.
   onModeEnter: ({ servicesManager }: withAppTypes): void => {
+    document.body.classList.add('clinique-amina-clinical');
     unregisterMedSAMBoxTool?.();
+    unregisterReviewWorkflowEvents?.();
+    unregisterReviewWorkflowEvents = registerReviewWorkflowEvents().unsubscribe;
     const { unsubscribe } = registerMedSAMBoxTool({
       servicesManager,
       seriesIdForSeriesUid: async (seriesInstanceUid: string) => {
@@ -64,8 +69,11 @@ const doctorAssistantExtension = {
     unregisterMedSAMBoxTool = unsubscribe;
   },
   onModeExit: (): void => {
+    document.body.classList.remove('clinique-amina-clinical');
     unregisterMedSAMBoxTool?.();
+    unregisterReviewWorkflowEvents?.();
     unregisterMedSAMBoxTool = undefined;
+    unregisterReviewWorkflowEvents = undefined;
   },
 };
 

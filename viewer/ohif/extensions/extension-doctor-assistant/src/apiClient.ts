@@ -37,8 +37,26 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     throw new NotFoundError(path);
   }
   if (!response.ok) {
-    const body = await response.text();
-    throw new ApiError(response.status, `doctor_assistant API ${path} -> ${response.status}: ${body}`);
+    const contentType = response.headers.get('content-type') || '';
+    let detail = response.statusText || 'request failed';
+    if (contentType.includes('application/json')) {
+      const body = await response.json().catch(() => null);
+      detail = body?.detail || body?.message || detail;
+    } else {
+      const body = await response.text();
+      // Never pour an ngrok/proxy HTML document into the clinical panel.
+      if (body && !body.trimStart().startsWith('<')) {
+        detail = body.slice(0, 240);
+      }
+    }
+    throw new ApiError(response.status, `${response.status}: ${detail}`);
+  }
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new ApiError(
+      502,
+      'The AI endpoint returned a web page instead of data. Confirm the remote API URL and restart the viewer.'
+    );
   }
   return response.json();
 }
@@ -119,6 +137,7 @@ export function getAnalysisResult(analysisId: string): Promise<AnalysisResult> {
 }
 
 export interface LungNoduleCandidate {
+  candidate_id: string;
   score: number;
   center_lps_mm: [number, number, number];
   size_whd_mm: [number, number, number];
@@ -129,6 +148,13 @@ export interface LungNoduleCandidate {
 export interface LungNoduleDetectionResult {
   series_id: string;
   model_version: string;
+  run_id: string;
+  cache_status: 'hit' | 'miss';
+  elapsed_ms: number;
+  generated_at: string;
+  source_fingerprint: string;
+  model_fingerprint: string;
+  cache_key: string;
   min_score: number;
   source_slice_count: number;
   detections: LungNoduleCandidate[];
@@ -137,13 +163,23 @@ export interface LungNoduleDetectionResult {
 /** Automatic CT candidate generation. A candidate is not a diagnosis. */
 export function detectLungNodules(
   seriesId: string,
-  minScore?: number
+  options: { minScore?: number; force?: boolean } = {}
 ): Promise<LungNoduleDetectionResult> {
   return apiFetch(`/v1/series/${seriesId}/detect-lung-nodules`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ min_score: minScore }),
+    body: JSON.stringify({
+      min_score: options.minScore,
+      force: options.force ?? false,
+    }),
   });
+}
+
+/** Recover the newest source-bound detector run after an API or panel restart. */
+export function getLatestLungNoduleDetection(
+  seriesId: string
+): Promise<LungNoduleDetectionResult> {
+  return apiFetch(`/v1/series/${seriesId}/detect-lung-nodules/latest`);
 }
 
 export interface SegmentBoxResult {
@@ -183,11 +219,72 @@ export interface SegmentVolumeResult {
   voxel_count: number;
   volume_ml: number;
   axial_bbox_diagonal_mm: number;
+  craniocaudal_extent_mm: number;
   model_version: string;
   dicom_seg_series_instance_uid: string;
   dicom_seg_sop_instance_uid: string;
   orthanc_status: 'published' | 'disabled' | 'failed';
   warning: string | null;
+  dicom_seg_artifact?: {
+    download_path: string;
+    sha256: string;
+    byte_length: number;
+    series_instance_uid: string;
+    sop_instance_uid: string;
+  } | null;
+  reference_comparison?: ReferenceComparison | null;
+}
+
+export interface ReferenceReaderComparison {
+  reader_id: string;
+  matched: boolean;
+  segment_number: number | null;
+  segment_label: string | null;
+  prompt_overlap_voxels: number;
+  dice: number | null;
+  reference_voxel_count: number | null;
+  reference_volume_ml: number | null;
+  reference_segmented_slice_count: number | null;
+}
+
+export interface ReferenceComparison {
+  reference_set: string;
+  matching_method: string;
+  reader_count: number;
+  matched_reader_count: number;
+  consensus_rule: string;
+  consensus_reader_threshold: number;
+  consensus_available: boolean;
+  consensus_dice: number | null;
+  consensus_voxel_count: number | null;
+  consensus_volume_ml: number | null;
+  consensus_segmented_slice_count: number | null;
+  readers: ReferenceReaderComparison[];
+}
+
+/** Retrieve the standards-valid DICOM SEG produced by the remote runtime. */
+export async function downloadDicomSegArtifact(downloadPath: string): Promise<Blob> {
+  const response = await fetch(`${getApiBaseUrl()}${downloadPath}`);
+  if (!response.ok) {
+    throw new ApiError(response.status, `Could not download DICOM SEG (${response.status})`);
+  }
+  return response.blob();
+}
+
+/** Copy a remote inference artifact into the Mac's local Orthanc through OHIF's proxy. */
+export async function saveDicomSegArtifactToLocalOrthanc(
+  downloadPath: string
+): Promise<{ ID?: string; ParentSeries?: string; Status?: string }> {
+  const artifact = await downloadDicomSegArtifact(downloadPath);
+  const response = await fetch('/local-orthanc-rest/instances', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/dicom' },
+    body: artifact,
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, `Local Orthanc rejected the DICOM SEG (${response.status})`);
+  }
+  return response.json();
 }
 
 /** Propagate a box through the complete DICOM stack and persist a DICOM SEG. */

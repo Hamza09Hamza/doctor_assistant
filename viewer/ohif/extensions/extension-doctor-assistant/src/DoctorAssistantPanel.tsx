@@ -8,63 +8,24 @@ import {
   getAnalysisResult,
   getRuntimeHealth,
   detectLungNodules,
+  getLatestLungNoduleDetection,
+  saveDicomSegArtifactToLocalOrthanc,
   NotFoundError,
   SeriesInfo,
   AnalysisResult,
   FindingInfo,
   RecommendationInfo,
-  LungNoduleDetectionResult,
+  LungNoduleCandidate,
 } from './apiClient';
-import { selectLungNoduleCandidate } from './lungNoduleCandidateEvents';
+import ClinicalReviewRail from './ClinicalReviewRail';
+import {
+  outlineLungNoduleCandidate,
+  selectLungNoduleCandidate,
+} from './lungNoduleCandidateEvents';
+import { useReviewWorkflowStore } from './useReviewWorkflowStore';
+import { resolveSourceSeriesInstanceUid } from './sourceSeries';
 
 const POLL_INTERVAL_MS = 1500;
-
-type SeriesDisplaySet = {
-  SeriesInstanceUID?: string;
-  Modality?: string;
-  isOverlayDisplaySet?: boolean;
-  referencedSeriesInstanceUID?: string;
-  referencedDisplaySetInstanceUID?: string;
-};
-
-const OVERLAY_MODALITIES = new Set(['SEG', 'RTSTRUCT', 'SR', 'PR', 'PMAP']);
-
-/** Resolve an overlay such as DICOM SEG back to the image series it annotates. */
-export function resolveSourceSeriesInstanceUid(
-  displaySets: SeriesDisplaySet[] | undefined,
-  getDisplaySetByUID: (uid: string) => SeriesDisplaySet | undefined
-): string | null {
-  const first = displaySets?.[0];
-  if (!first) {
-    return null;
-  }
-
-  if (first.referencedSeriesInstanceUID) {
-    return first.referencedSeriesInstanceUID;
-  }
-  if (first.referencedDisplaySetInstanceUID) {
-    const referenced = getDisplaySetByUID(first.referencedDisplaySetInstanceUID);
-    if (referenced?.SeriesInstanceUID) {
-      return referenced.SeriesInstanceUID;
-    }
-  }
-
-  const firstIsOverlay =
-    first.isOverlayDisplaySet || OVERLAY_MODALITIES.has(String(first.Modality || '').toUpperCase());
-  if (!firstIsOverlay && first.SeriesInstanceUID) {
-    return first.SeriesInstanceUID;
-  }
-
-  const sourceImages = displaySets.find(displaySet => {
-    const modality = String(displaySet.Modality || '').toUpperCase();
-    return (
-      displaySet.SeriesInstanceUID &&
-      !displaySet.isOverlayDisplaySet &&
-      !OVERLAY_MODALITIES.has(modality)
-    );
-  });
-  return sourceImages?.SeriesInstanceUID ?? null;
-}
 
 /**
  * Read the source image series from OHIF's active display sets. A study can put a
@@ -74,26 +35,83 @@ export function resolveSourceSeriesInstanceUid(
  */
 function useActiveSeriesInstanceUid(): string | null {
   const { servicesManager } = useSystem();
-  const { displaySetService } = servicesManager.services;
+  const { displaySetService, viewportGridService } = servicesManager.services;
   const [seriesInstanceUid, setSeriesInstanceUid] = useState<string | null>(null);
 
   const readActiveSeries = useCallback(() => {
-    const displaySets = displaySetService.getActiveDisplaySets();
+    const viewportState = viewportGridService.getState?.();
+    const activeViewport = viewportState?.viewports?.get(viewportState.activeViewportId);
+    const viewportDisplaySets = (activeViewport?.displaySetInstanceUIDs || [])
+      .map((uid: string) => displaySetService.getDisplaySetByUID(uid))
+      .filter(Boolean);
+    const displaySets = viewportDisplaySets.length
+      ? viewportDisplaySets
+      : displaySetService.getActiveDisplaySets();
     setSeriesInstanceUid(
       resolveSourceSeriesInstanceUid(displaySets, uid => displaySetService.getDisplaySetByUID(uid))
     );
-  }, [displaySetService]);
+  }, [displaySetService, viewportGridService]);
 
   useEffect(() => {
     readActiveSeries();
-    const subscription = displaySetService.subscribe(
-      displaySetService.EVENTS.DISPLAY_SETS_ADDED,
-      readActiveSeries
-    );
-    return () => subscription.unsubscribe();
-  }, [displaySetService, readActiveSeries]);
+    const subscriptions = [
+      displaySetService.subscribe(displaySetService.EVENTS.DISPLAY_SETS_ADDED, readActiveSeries),
+      displaySetService.subscribe(displaySetService.EVENTS.DISPLAY_SETS_CHANGED, readActiveSeries),
+      displaySetService.subscribe(displaySetService.EVENTS.DISPLAY_SETS_REMOVED, readActiveSeries),
+      viewportGridService.subscribe(
+        viewportGridService.EVENTS.ACTIVE_VIEWPORT_ID_CHANGED,
+        readActiveSeries
+      ),
+      viewportGridService.subscribe(
+        viewportGridService.EVENTS.GRID_STATE_CHANGED,
+        readActiveSeries
+      ),
+    ];
+    return () => subscriptions.forEach(subscription => subscription.unsubscribe());
+  }, [displaySetService, viewportGridService, readActiveSeries]);
 
   return seriesInstanceUid;
+}
+
+function useReferenceSegCount(seriesInstanceUid: string | null): number {
+  const { servicesManager } = useSystem();
+  const { displaySetService } = servicesManager.services;
+  const [count, setCount] = useState(0);
+
+  const readCount = useCallback(() => {
+    if (!seriesInstanceUid) {
+      setCount(0);
+      return;
+    }
+    const segmentations = displaySetService.getActiveDisplaySets().filter((displaySet: any) => {
+      if (String(displaySet.Modality || '').toUpperCase() !== 'SEG' || displaySet.madeInClient) {
+        return false;
+      }
+      if (displaySet.referencedSeriesInstanceUID) {
+        return displaySet.referencedSeriesInstanceUID === seriesInstanceUid;
+      }
+      if (displaySet.referencedDisplaySetInstanceUID) {
+        return (
+          displaySetService.getDisplaySetByUID(displaySet.referencedDisplaySetInstanceUID)
+            ?.SeriesInstanceUID === seriesInstanceUid
+        );
+      }
+      return true;
+    });
+    setCount(segmentations.length);
+  }, [displaySetService, seriesInstanceUid]);
+
+  useEffect(() => {
+    readCount();
+    const subscriptions = [
+      displaySetService.subscribe(displaySetService.EVENTS.DISPLAY_SETS_ADDED, readCount),
+      displaySetService.subscribe(displaySetService.EVENTS.DISPLAY_SETS_CHANGED, readCount),
+      displaySetService.subscribe(displaySetService.EVENTS.DISPLAY_SETS_REMOVED, readCount),
+    ];
+    return () => subscriptions.forEach(subscription => subscription.unsubscribe());
+  }, [displaySetService, readCount]);
+
+  return count;
 }
 
 type PanelState =
@@ -110,26 +128,24 @@ type PanelState =
   | { phase: 'running'; series: SeriesInfo; analysisId: string }
   | { phase: 'error'; message: string };
 
-type CandidateScanState =
-  | { phase: 'idle' }
-  | { phase: 'running' }
-  | { phase: 'complete'; result: LungNoduleDetectionResult }
-  | { phase: 'error'; message: string };
-
 export default function DoctorAssistantPanel() {
   const seriesInstanceUid = useActiveSeriesInstanceUid();
+  const referenceSegCount = useReferenceSegCount(seriesInstanceUid);
+  const { servicesManager } = useSystem();
   const [state, setState] = useState<PanelState>({ phase: 'loading' });
-  const [candidateScan, setCandidateScan] = useState<CandidateScanState>({ phase: 'idle' });
+  const workflowSeriesId = state.phase === 'interactive-ready' ? state.series.id : null;
+  const [workflow, updateWorkflow] = useReviewWorkflowStore(workflowSeriesId);
+  const [clock, setClock] = useState(Date.now());
   const candidateScanGeneration = useRef(0);
+  const recoveredDetectorSeriesIds = useRef(new Set<string>());
 
   useEffect(() => {
     let cancelled = false;
+    candidateScanGeneration.current += 1;
     if (!seriesInstanceUid) {
       setState({ phase: 'loading' });
       return;
     }
-    candidateScanGeneration.current += 1;
-    setCandidateScan({ phase: 'idle' });
     setState({ phase: 'loading' });
     (async () => {
       try {
@@ -205,6 +221,54 @@ export default function DoctorAssistantPanel() {
     return () => clearInterval(interval);
   }, [state]);
 
+  useEffect(() => {
+    if (workflow.candidateScan.phase !== 'running') {
+      return;
+    }
+    setClock(Date.now());
+    const interval = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [workflow.candidateScan.phase]);
+
+  useEffect(() => {
+    if (
+      state.phase !== 'interactive-ready' ||
+      workflow.candidateScan.phase !== 'idle' ||
+      recoveredDetectorSeriesIds.current.has(state.series.id)
+    ) {
+      return;
+    }
+    const seriesId = state.series.id;
+    const requestGeneration = candidateScanGeneration.current + 1;
+    candidateScanGeneration.current = requestGeneration;
+    recoveredDetectorSeriesIds.current.add(seriesId);
+    let cancelled = false;
+    getLatestLungNoduleDetection(seriesId)
+      .then(result => {
+        if (
+          !cancelled &&
+          candidateScanGeneration.current === requestGeneration &&
+          result.series_id === seriesId
+        ) {
+          updateWorkflow({
+            candidateScan: {
+              phase: 'complete',
+              result,
+              elapsedSeconds: Math.max(0, result.elapsed_ms / 1000),
+            },
+          });
+        }
+      })
+      .catch(error => {
+        if (!(error instanceof NotFoundError)) {
+          console.warn('Could not recover the latest detector run', error);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [state, workflow.candidateScan.phase, updateWorkflow]);
+
   const runAnalysis = useCallback(async () => {
     if (state.phase !== 'ready') {
       return;
@@ -218,32 +282,149 @@ export default function DoctorAssistantPanel() {
     }
   }, [state]);
 
-  const scanForNoduleCandidates = useCallback(async () => {
-    if (state.phase !== 'interactive-ready' || !state.detectorConfigured) {
+  const scanForNoduleCandidates = useCallback(async (force = false) => {
+    if (
+      state.phase !== 'interactive-ready' ||
+      !state.detectorConfigured ||
+      workflow.review.phase === 'running' ||
+      workflow.artifactSave.phase === 'saving'
+    ) {
       return;
     }
     const requestedSeriesId = state.series.id;
     const requestGeneration = candidateScanGeneration.current + 1;
     candidateScanGeneration.current = requestGeneration;
-    setCandidateScan({ phase: 'running' });
+    recoveredDetectorSeriesIds.current.add(requestedSeriesId);
+    const startedAt = Date.now();
+    // Candidate ranks and IDs belong to one detector run. A forced refresh must not
+    // leave an outline or disposition from the previous run attached by array index.
+    updateWorkflow({
+      candidateScan: { phase: 'running', startedAt },
+      selectedCandidateIndex: null,
+      review: { phase: 'idle' },
+      candidateReviews: {},
+      candidateAssessments: {},
+      artifactSave: { phase: 'idle' },
+    });
     try {
-      const result = await detectLungNodules(state.series.id);
+      const result = await detectLungNodules(state.series.id, { force });
       if (
         candidateScanGeneration.current === requestGeneration &&
         result.series_id === requestedSeriesId
       ) {
-        setCandidateScan({ phase: 'complete', result });
+        updateWorkflow({
+          candidateScan: {
+            phase: 'complete',
+            result,
+            elapsedSeconds:
+              result.cache_status === 'hit'
+                ? Math.max(0, result.elapsed_ms / 1000)
+                : Math.max(0, (Date.now() - startedAt) / 1000),
+          },
+        });
       }
     } catch (error) {
       if (candidateScanGeneration.current === requestGeneration) {
-        setCandidateScan({ phase: 'error', message: String(error) });
+        updateWorkflow({ candidateScan: { phase: 'error', message: String(error) } });
       }
     }
-  }, [state]);
+  }, [state, workflow.review.phase, workflow.artifactSave.phase, updateWorkflow]);
+
+  const inspectCandidate = useCallback(
+    (candidate: LungNoduleCandidate, candidateIndex: number) => {
+      if (state.phase !== 'interactive-ready') {
+        return;
+      }
+      updateWorkflow(current => ({
+        selectedCandidateIndex: candidateIndex,
+        review: current.candidateReviews[candidateIndex]
+          ? { phase: 'complete', ...current.candidateReviews[candidateIndex] }
+          : current.selectedCandidateIndex === candidateIndex
+            ? current.review
+            : { phase: 'idle' },
+        artifactSave:
+          current.selectedCandidateIndex === candidateIndex
+            ? current.artifactSave
+            : { phase: 'idle' },
+      }));
+      selectLungNoduleCandidate({
+        seriesId: state.series.id,
+        candidateIndex,
+        candidate,
+      });
+    },
+    [state, updateWorkflow]
+  );
+
+  const outlineCandidate = useCallback(
+    (candidate: LungNoduleCandidate, candidateIndex: number) => {
+      if (state.phase !== 'interactive-ready') {
+        return;
+      }
+      updateWorkflow({ selectedCandidateIndex: candidateIndex });
+      outlineLungNoduleCandidate({
+        seriesId: state.series.id,
+        candidateIndex,
+        candidate,
+      });
+    },
+    [state, updateWorkflow]
+  );
+
+  const openComparison = useCallback(() => {
+    servicesManager.services.panelService.activatePanel(
+      '@ohif/extension-cornerstone.panelModule.panelSegmentation',
+      true
+    );
+  }, [servicesManager]);
+
+  const saveOutlineToCase = useCallback(async () => {
+    if (workflow.review.phase !== 'complete' || !workflow.review.artifact) {
+      return;
+    }
+    const artifact = workflow.review.artifact;
+    updateWorkflow({ artifactSave: { phase: 'saving' } });
+    try {
+      await saveDicomSegArtifactToLocalOrthanc(artifact.downloadPath);
+      updateWorkflow(current =>
+        current.review.phase === 'complete' &&
+        current.review.artifact?.sopInstanceUid === artifact.sopInstanceUid
+          ? { artifactSave: { phase: 'saved' } }
+          : {}
+      );
+    } catch (error) {
+      updateWorkflow(current =>
+        current.review.phase === 'complete' &&
+        current.review.artifact?.sopInstanceUid === artifact.sopInstanceUid
+          ? {
+              artifactSave: {
+                phase: 'error',
+                message: error instanceof Error ? error.message : String(error),
+              },
+            }
+          : {}
+      );
+    }
+  }, [workflow.review, updateWorkflow]);
+
+  const setCandidateAssessment = useCallback(
+    (assessment: 'supported' | 'dismissed' | 'uncertain') => {
+      if (workflow.selectedCandidateIndex == null) {
+        return;
+      }
+      updateWorkflow(current => ({
+        candidateAssessments: {
+          ...current.candidateAssessments,
+          [workflow.selectedCandidateIndex!]: assessment,
+        },
+      }));
+    },
+    [workflow.selectedCandidateIndex, updateWorkflow]
+  );
 
   if (state.phase === 'loading') {
     return (
-      <div className="flex flex-col gap-3 p-3">
+      <div className="clinical-review-shell flex flex-col gap-3">
         <PanelBrandHeader />
         <div className="text-muted-foreground flex items-center gap-2 p-1 text-sm">
           <Icons.LoadingOHIFMark className="h-5 w-5" />
@@ -255,7 +436,7 @@ export default function DoctorAssistantPanel() {
 
   if (state.phase === 'not-imported') {
     return (
-      <div className="flex flex-col gap-3 p-3">
+      <div className="clinical-review-shell flex flex-col gap-3">
         <PanelBrandHeader />
         <InfoCard
           icon={<Icons.NotificationInfo className="h-5 w-5" />}
@@ -267,7 +448,7 @@ export default function DoctorAssistantPanel() {
 
   if (state.phase === 'error') {
     return (
-      <div className="flex flex-col gap-3 p-3">
+      <div className="clinical-review-shell flex flex-col gap-3">
         <PanelBrandHeader />
         <div className="bg-error-bg border-error-border text-error-text rounded-md border p-3">
           <div className="text-sm font-semibold">Something went wrong while checking this scan</div>
@@ -278,100 +459,34 @@ export default function DoctorAssistantPanel() {
   }
 
   if (state.phase === 'interactive-ready') {
+    const runningSeconds =
+      workflow.candidateScan.phase === 'running'
+        ? Math.max(0, (clock - workflow.candidateScan.startedAt) / 1000)
+        : 0;
     return (
-      <div className="flex flex-col gap-3 p-3">
-        <PanelBrandHeader />
-        <div className="text-muted-foreground text-xs">
-          {state.series.modality} / {state.series.body_part}
-        </div>
-        <InfoCard
-          icon={<Icons.NotificationInfo className="h-5 w-5" />}
-          headline="MedSAM2 structure segmentation is ready"
-          detail="Choose Segment structure (tight box), then box one visible structure on an axial slice. This outlines the prompt through the volume; it does not determine whether the structure is abnormal."
-        />
-        {state.detectorConfigured && (
-          <div className="border-border bg-card shadow-brand rounded-xl border p-3">
-            <div className="font-serif text-foreground text-sm font-semibold">
-              Automatic lung-nodule shortlist
-            </div>
-            <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
-              Scans the complete chest CT for candidates. Expect false marks: this detector
-              found 21 of 23 consensus nodules across 27 eligible LIDC scans whose CT
-              SeriesInstanceUIDs were absent from LUNA16's published 888-series corpus,
-              with 2.15 false candidates per scan at its fixed threshold.
-            </p>
-
-            {candidateScan.phase === 'idle' && (
-              <Button
-                variant="default"
-                onClick={scanForNoduleCandidates}
-                data-cy="scan-lung-nodule-candidates"
-                className="mt-3 w-full"
-              >
-                Scan for nodule candidates
-              </Button>
-            )}
-
-            {candidateScan.phase === 'running' && (
-              <div
-                className="bg-info-bg border-info-border text-info-text mt-3 flex items-start gap-2 rounded-md border p-2.5"
-                data-cy="lung-nodule-scan-running"
-              >
-                <Icons.LoadingOHIFMark className="mt-0.5 h-4 w-4 shrink-0" />
-                <div>
-                  <div className="text-xs font-semibold">Scanning the complete CT…</div>
-                  <div className="mt-0.5 text-[11px] opacity-80">
-                    The Colab worker is locked until candidate detection finishes.
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {candidateScan.phase === 'error' && (
-              <div className="bg-error-bg border-error-border text-error-text mt-3 rounded-md border p-2.5">
-                <div className="text-xs font-semibold">Candidate scan failed</div>
-                <div className="mt-1 font-mono text-[10px] opacity-80">
-                  {candidateScan.message}
-                </div>
-                <Button
-                  variant="secondary"
-                  onClick={scanForNoduleCandidates}
-                  className="mt-2 w-full"
-                >
-                  Retry candidate scan
-                </Button>
-              </div>
-            )}
-
-            {candidateScan.phase === 'complete' && (
-              <CandidateShortlist
-                result={candidateScan.result}
-                onSelect={(candidate, candidateIndex) =>
-                  selectLungNoduleCandidate({
-                    seriesId: state.series.id,
-                    candidateIndex,
-                    candidate,
-                  })
-                }
-                onRescan={scanForNoduleCandidates}
-              />
-            )}
-          </div>
-        )}
-        {(state.modelVersion || state.detectorVersion) && (
-          <div className="text-muted-foreground flex flex-col gap-0.5 font-mono text-[10px]">
-            {state.detectorVersion && <span>{state.detectorVersion}</span>}
-            {state.modelVersion && <span>{state.modelVersion}</span>}
-          </div>
-        )}
-      </div>
+      <ClinicalReviewRail
+        series={state.series}
+        detectorConfigured={state.detectorConfigured}
+        detectorVersion={state.detectorVersion}
+        segmenterVersion={state.modelVersion}
+        referenceSegCount={referenceSegCount}
+        workflow={workflow}
+        runningSeconds={runningSeconds}
+        onDetect={() => scanForNoduleCandidates(false)}
+        onRerun={() => scanForNoduleCandidates(true)}
+        onSelectCandidate={inspectCandidate}
+        onOutlineCandidate={outlineCandidate}
+        onOpenComparison={openComparison}
+        onSaveOutline={saveOutlineToCase}
+        onSetAssessment={setCandidateAssessment}
+      />
     );
   }
 
   const series = state.series;
 
   return (
-    <div className="flex flex-col gap-3 p-3">
+    <div className="clinical-review-shell flex flex-col gap-3">
       <PanelBrandHeader />
       <div className="text-muted-foreground text-xs">
         {series.modality} / {series.body_part}
@@ -399,9 +514,7 @@ export default function DoctorAssistantPanel() {
       {state.phase === 'ready' && series.analysis_eligible && !state.latest && (
         <div className="border-border bg-card shadow-brand rounded-xl border p-4">
           <div className="flex flex-col gap-3">
-            <h3 className="font-serif text-foreground text-[15px] font-semibold">
-              Run AI Analysis
-            </h3>
+            <h3 className="text-foreground text-[15px] font-semibold">Run AI Analysis</h3>
             <p className="text-muted-foreground text-sm">
               Our AI will scan this image for the findings it's trained to detect.
             </p>
@@ -426,110 +539,38 @@ export default function DoctorAssistantPanel() {
   );
 }
 
-function CandidateShortlist({
-  result,
-  onSelect,
-  onRescan,
-}: {
-  result: LungNoduleDetectionResult;
-  onSelect: (candidate: LungNoduleDetectionResult['detections'][number], index: number) => void;
-  onRescan: () => void;
-}) {
-  if (!result.detections.length) {
-    return (
-      <div className="mt-3">
-        <div className="bg-muted border-border text-muted-foreground rounded-md border p-2.5 text-xs">
-          No candidate crossed the fixed score threshold. This does not prove the scan is clear.
-        </div>
-        <Button
-          variant="secondary"
-          onClick={onRescan}
-          className="mt-2 w-full"
-        >
-          Scan again
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-3 flex flex-col gap-2" data-cy="lung-nodule-candidate-list">
-      <div className="text-muted-foreground flex items-center justify-between text-[11px]">
-        <span>
-          {result.detections.length} candidate{result.detections.length === 1 ? '' : 's'} at score ≥{' '}
-          {result.min_score.toFixed(2)}
-        </span>
-        <button
-          type="button"
-          onClick={onRescan}
-          className="text-primary hover:text-primary-hover underline underline-offset-2"
-        >
-          Rescan
-        </button>
-      </div>
-      {result.detections.map((candidate, index) => {
-        const largestEdgeMm = Math.max(...candidate.size_whd_mm);
-        return (
-          <button
-            key={`${candidate.seed_sop_instance_uid}-${index}`}
-            type="button"
-            data-cy={`lung-nodule-candidate-${index + 1}`}
-            onClick={() => onSelect(candidate, index)}
-            className="border-border bg-background hover:border-primary/70 hover:bg-primary/5 focus-visible:ring-primary group flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
-          >
-            <span className="border-accent text-accent flex h-7 w-7 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] font-semibold">
-              {index + 1}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="text-foreground block text-xs font-semibold">
-                Review and outline candidate
-              </span>
-              <span className="text-muted-foreground mt-0.5 block text-[10.5px]">
-                uncalibrated score {candidate.score.toFixed(3)} · box {largestEdgeMm.toFixed(1)} mm
-              </span>
-            </span>
-            <span className="text-primary text-base transition-transform group-hover:translate-x-0.5">›</span>
-          </button>
-        );
-      })}
-      <div className="text-warning-text text-[10.5px] leading-relaxed">
-        Candidates are places to inspect, not confirmed nodules. Selecting one jumps to its
-        slice and asks MedSAM2 to outline it.
-      </div>
-    </div>
-  );
-}
-
-/**
- * Brand strip at the top of every panel state — the findings panel is the one
- * surface a patient spends the most time looking at, so it carries the Clinique
- * Amina identity (serif wordmark, gold hairline) rather than staying purely
- * functional. `font-serif` resolves to Playfair Display (tailwind.config.js);
- * the gold hairline reuses --accent rather than a hardcoded color so it moves
- * with the palette if the brand tokens are retuned later.
- */
 function PanelBrandHeader() {
   return (
-    <div className="border-border/70 flex items-center gap-2.5 border-b pb-3">
-      {/* Monogram mark, not a second copy of plain text — a gold ring around a
-       * teal "A" reads as an actual brand mark rather than a relabeled OHIF
-       * header. Pure CSS/inline-SVG, no external asset needed. */}
-      <span className="border-accent bg-secondary text-primary shadow-brand-sm flex h-8 w-8 shrink-0 items-center justify-center rounded-full border-2">
-        <span className="font-serif text-sm font-bold">A</span>
+    <div className="clinical-panel-header">
+      <span
+        className="clinical-mark"
+        aria-hidden="true"
+      >
+        <svg
+          viewBox="0 0 32 32"
+          role="presentation"
+        >
+          <path d="M7 12V7h5M20 7h5v5M25 20v5h-5M12 25H7v-5" />
+          <path d="M8 16h5l2-4 3 8 2-4h4" />
+        </svg>
       </span>
-      <div className="flex flex-col leading-tight">
-        <span className="font-serif text-foreground text-[15px] font-semibold tracking-tight">
-          Clinique Amina
-        </span>
-        <span className="text-muted-foreground text-[10.5px] tracking-wide uppercase">
-          AI Imaging Review
-        </span>
+      <div className="clinical-panel-title">
+        <strong>Clinique Amina</strong>
+        <span>Imaging review workspace</span>
       </div>
     </div>
   );
 }
 
-function InfoCard({ icon, headline, detail }: { icon: React.ReactNode; headline: string; detail?: string }) {
+function InfoCard({
+  icon,
+  headline,
+  detail,
+}: {
+  icon: React.ReactNode;
+  headline: string;
+  detail?: string;
+}) {
   return (
     <div className="bg-info-bg border-info-border text-info-text shadow-brand-sm flex items-start gap-2 rounded-xl border p-3">
       {icon}
@@ -571,9 +612,7 @@ const urgencyToneClass: Record<UrgencyTone, string> = {
 
 function UrgencyBadge({ urgency }: { urgency: string | null | undefined }) {
   const tone = urgencyTone(urgency);
-  return (
-    <Badge className={urgencyToneClass[tone]}>{urgency || 'unknown'}</Badge>
-  );
+  return <Badge className={urgencyToneClass[tone]}>{urgency || 'unknown'}</Badge>;
 }
 
 function AnalysisSummary({ result, onRetry }: { result: AnalysisResult; onRetry: () => void }) {
@@ -628,7 +667,7 @@ function AnalysisSummary({ result, onRetry }: { result: AnalysisResult; onRetry:
       )}
 
       <PanelSection defaultOpen>
-        <PanelSection.Header className="font-serif text-[13px] font-semibold tracking-wide">
+        <PanelSection.Header className="text-[13px] font-semibold tracking-wide">
           Findings
         </PanelSection.Header>
         <PanelSection.Content>
@@ -648,7 +687,7 @@ function AnalysisSummary({ result, onRetry }: { result: AnalysisResult; onRetry:
 
       {result.recommendations.length > 0 && (
         <PanelSection defaultOpen>
-          <PanelSection.Header className="font-serif text-[13px] font-semibold tracking-wide">
+          <PanelSection.Header className="text-[13px] font-semibold tracking-wide">
             Recommendations
           </PanelSection.Header>
           <PanelSection.Content>
@@ -666,7 +705,7 @@ function AnalysisSummary({ result, onRetry }: { result: AnalysisResult; onRetry:
 
       {result.report_text && (
         <PanelSection defaultOpen={false}>
-          <PanelSection.Header className="font-serif text-[13px] font-semibold tracking-wide">
+          <PanelSection.Header className="text-[13px] font-semibold tracking-wide">
             Full Report
           </PanelSection.Header>
           <PanelSection.Content>

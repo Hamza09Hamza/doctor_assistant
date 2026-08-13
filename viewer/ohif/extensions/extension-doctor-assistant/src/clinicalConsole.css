@@ -1,0 +1,788 @@
+/*
+ * Clinique Amina clinical console
+ *
+ * Scoped to the Doctor Assistant mode. The rest of the vendored OHIF application keeps
+ * its own theme; this reading-room surface deliberately uses low-glare imaging chrome.
+ * The signature visual is the functional Detect -> Inspect -> Compare rail.
+ */
+body.clinique-amina-clinical,
+body.clinique-amina-clinical.dark {
+  --highlight: 173 60% 43%;
+  --neutral: 198 10% 56%;
+  --neutral-light: 197 16% 28%;
+  --neutral-dark: 200 25% 6%;
+  --background: 198 28% 6%;
+  --foreground: 192 24% 92%;
+  --card: 197 23% 9%;
+  --card-foreground: 192 24% 92%;
+  --popover: 198 23% 9%;
+  --popover-foreground: 192 24% 92%;
+  --primary: 173 60% 43%;
+  --primary-foreground: 198 35% 6%;
+  --secondary: 196 22% 15%;
+  --secondary-foreground: 190 28% 90%;
+  --muted: 197 20% 13%;
+  --muted-foreground: 195 13% 62%;
+  --accent: 38 58% 57%;
+  --accent-foreground: 198 35% 6%;
+  --destructive: 357 57% 58%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 196 19% 21%;
+  --input: 196 19% 23%;
+  --ring: 173 60% 43%;
+  --radius: 0.45rem;
+  --primary-hover: 173 65% 49%;
+  --accent-hover: 38 65% 62%;
+  --success-bg: hsl(158 32% 13%);
+  --success-border: hsl(157 40% 28%);
+  --success-text: hsl(157 48% 70%);
+  --info-bg: hsl(191 36% 13%);
+  --info-border: hsl(190 42% 29%);
+  --info-text: hsl(190 62% 72%);
+  --warning-bg: hsl(38 32% 13%);
+  --warning-border: hsl(38 43% 30%);
+  --warning-text: hsl(38 67% 70%);
+  --error-bg: hsl(357 30% 13%);
+  --error-border: hsl(357 42% 30%);
+  --error-text: hsl(357 65% 73%);
+  font-family: 'IBM Plex Sans', Inter, system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+body.clinique-amina-clinical code,
+body.clinique-amina-clinical .font-mono,
+.clinical-mono {
+  font-family: 'IBM Plex Mono', Menlo, Monaco, Consolas, monospace;
+}
+
+.clinical-review-shell {
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 15px 22px;
+  background:
+    linear-gradient(180deg, rgba(43, 174, 155, 0.035), transparent 120px),
+    hsl(var(--card));
+  color: hsl(var(--foreground));
+  scrollbar-color: hsl(var(--border)) transparent;
+}
+
+.clinical-panel-header {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 2px 0 12px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.clinical-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid hsl(var(--primary) / 0.6);
+  border-radius: 7px;
+  background: hsl(var(--primary) / 0.08);
+  color: hsl(var(--primary));
+}
+
+.clinical-mark svg {
+  width: 25px;
+  height: 25px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.clinical-panel-title {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.clinical-panel-title strong {
+  overflow: hidden;
+  color: hsl(var(--foreground));
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clinical-panel-title span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.clinical-study-chip {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 5px;
+}
+
+.clinical-study-chip span {
+  padding: 3px 6px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 4px;
+  color: hsl(var(--muted-foreground));
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.clinical-runtime-line {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 1px 7px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.clinical-live-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: hsl(var(--primary));
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.12);
+}
+
+.clinical-runtime-reference {
+  margin-left: auto;
+  color: hsl(var(--foreground) / 0.76);
+  text-align: right;
+}
+
+.clinical-workflow {
+  margin-top: 2px;
+}
+
+.clinical-step {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  column-gap: 10px;
+}
+
+.clinical-step-rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.clinical-step-rail::after {
+  position: absolute;
+  top: 28px;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: hsl(var(--border));
+  content: '';
+}
+
+.clinical-step-last .clinical-step-rail::after {
+  display: none;
+}
+
+.clinical-step-rail > span {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 27px;
+  height: 27px;
+  place-items: center;
+  border: 1px solid hsl(var(--border));
+  border-radius: 50%;
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.clinical-step-active .clinical-step-rail > span {
+  border-color: hsl(var(--primary));
+  color: hsl(var(--primary));
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.08);
+}
+
+.clinical-step-complete .clinical-step-rail > span {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.clinical-step-error .clinical-step-rail > span {
+  border-color: var(--error-border);
+  color: var(--error-text);
+}
+
+.clinical-step-body {
+  min-width: 0;
+  padding: 1px 0 18px;
+}
+
+.clinical-step-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.clinical-step-heading > span {
+  color: hsl(var(--primary));
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.clinical-step-heading h3 {
+  margin: 0;
+  color: hsl(var(--foreground));
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+}
+
+.clinical-step-content > p {
+  margin: 2px 0 11px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.48;
+}
+
+.clinical-muted-copy {
+  padding: 8px 10px;
+  border-left: 2px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.38);
+}
+
+.clinical-primary-action,
+.clinical-secondary-action {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 4px;
+  border-radius: 5px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.clinical-inline-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 7px;
+  padding: 9px 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--muted) / 0.52);
+}
+
+.clinical-inline-state > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.clinical-inline-state strong {
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.clinical-inline-state span {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.clinical-inline-active {
+  border-color: hsl(var(--primary) / 0.35);
+  background: hsl(var(--primary) / 0.07);
+}
+
+.clinical-inline-error {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+}
+
+.clinical-state-spinner {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  color: hsl(var(--primary));
+}
+
+.clinical-complete-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: hsl(var(--foreground) / 0.78);
+  font-size: 12px;
+}
+
+.clinical-complete-line .clinical-mono {
+  color: hsl(var(--muted-foreground));
+}
+
+.clinical-cache-note {
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  text-transform: lowercase;
+}
+
+.clinical-text-action {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--primary));
+  font: inherit;
+  cursor: pointer;
+}
+
+.clinical-text-action:hover,
+.clinical-text-action:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.clinical-text-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  text-decoration: none;
+}
+
+.clinical-candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 9px;
+}
+
+.clinical-candidate {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto 18px;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--secondary) / 0.45);
+  color: hsl(var(--foreground));
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 130ms ease, background-color 130ms ease, transform 130ms ease;
+}
+
+.clinical-candidate:hover:not(:disabled),
+.clinical-candidate:focus-visible {
+  border-color: hsl(var(--primary) / 0.65);
+  background: hsl(var(--primary) / 0.065);
+  outline: none;
+}
+
+.clinical-candidate:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.clinical-candidate:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.clinical-candidate-selected {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.1);
+  box-shadow: inset 3px 0 0 hsl(var(--primary));
+}
+
+.clinical-candidate-rank {
+  color: hsl(var(--primary));
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.clinical-candidate-copy,
+.clinical-candidate-score {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.clinical-candidate-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.clinical-candidate-copy span {
+  overflow: hidden;
+  margin-top: 2px;
+  color: hsl(var(--muted-foreground));
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clinical-candidate-score {
+  align-items: flex-end;
+}
+
+.clinical-candidate-score strong {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.clinical-candidate-score span {
+  color: hsl(var(--muted-foreground));
+  font-size: 9.5px;
+}
+
+.clinical-candidate-arrow {
+  color: hsl(var(--primary));
+  font-size: 16px;
+}
+
+.clinical-selection-action {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid hsl(var(--primary) / 0.34);
+  border-radius: 6px;
+  background: hsl(var(--primary) / 0.055);
+}
+
+.clinical-selection-action > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.clinical-selection-kicker {
+  color: hsl(var(--primary));
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.clinical-selection-action strong {
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.clinical-result {
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid hsl(var(--primary) / 0.36);
+  border-radius: 6px;
+  background: hsl(var(--primary) / 0.055);
+}
+
+.clinical-result-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.clinical-result-title > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.clinical-result-title span:not(.clinical-result-check) {
+  color: hsl(var(--primary));
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.clinical-result-title strong {
+  overflow: hidden;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clinical-result-check {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.clinical-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 11px 0 8px;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 5px;
+  background: hsl(var(--border));
+}
+
+.clinical-metric-grid-four {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.clinical-metric {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 7px 3px;
+  background: hsl(var(--card));
+}
+
+.clinical-metric strong {
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.clinical-metric span {
+  color: hsl(var(--muted-foreground));
+  font-size: 9.5px;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.clinical-score-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 5px;
+  color: hsl(var(--muted-foreground));
+  font-size: 10.5px;
+}
+
+.clinical-score-line .clinical-mono {
+  color: hsl(var(--foreground));
+}
+
+.clinical-score-help {
+  margin-left: auto;
+  color: hsl(var(--accent));
+}
+
+.clinical-agreement {
+  margin: 9px 0 3px;
+  padding: 9px;
+  border: 1px solid hsl(var(--accent) / 0.32);
+  border-radius: 5px;
+  background: hsl(var(--accent) / 0.055);
+}
+
+.clinical-agreement > div:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 10.5px;
+}
+
+.clinical-agreement > div:first-child strong {
+  color: hsl(var(--accent));
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.clinical-agreement-bar {
+  height: 3px;
+  margin: 7px 0;
+  overflow: hidden;
+  border-radius: 2px;
+  background: hsl(var(--border));
+}
+
+.clinical-agreement-bar span {
+  display: block;
+  height: 100%;
+  background: hsl(var(--accent));
+}
+
+.clinical-agreement p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.clinical-result-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.clinical-result-actions .clinical-secondary-action {
+  margin-top: 0;
+}
+
+.clinical-saved-line,
+.clinical-save-error {
+  margin-top: 7px;
+  padding: 7px 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.clinical-disposition {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.clinical-disposition > span {
+  color: hsl(var(--foreground) / 0.82);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.clinical-disposition > div {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.clinical-disposition button {
+  min-height: 29px;
+  padding: 4px 3px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 4px;
+  background: hsl(var(--background) / 0.52);
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.clinical-disposition button:hover,
+.clinical-disposition button:focus-visible,
+.clinical-disposition button.clinical-disposition-selected {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  outline: none;
+}
+
+.clinical-disposition p {
+  margin: 6px 0 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 9.5px;
+  line-height: 1.35;
+}
+
+.clinical-saved-line {
+  border: 1px solid var(--success-border);
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.clinical-save-error {
+  border: 1px solid var(--error-border);
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+.clinical-safety-note {
+  margin: 9px 0 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 10.5px;
+  line-height: 1.42;
+}
+
+.clinical-reference-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+}
+
+.clinical-reference-swatch {
+  width: 12px;
+  height: 3px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  background: hsl(var(--accent));
+}
+
+.clinical-disclosure {
+  margin-top: 8px;
+  border-top: 1px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+}
+
+.clinical-disclosure summary {
+  padding: 11px 1px 6px;
+  color: hsl(var(--foreground) / 0.82);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.clinical-disclosure p {
+  margin: 4px 1px 8px;
+  font-size: 11px;
+  line-height: 1.48;
+}
+
+.clinical-evidence-copy {
+  padding-bottom: 8px;
+}
+
+.clinical-evidence-copy code {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  padding: 5px 6px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 4px;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground) / 0.7);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clinical-candidate {
+    transition: none;
+  }
+}

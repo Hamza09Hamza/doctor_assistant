@@ -9,6 +9,7 @@ from unittest import mock
 import numpy as np
 
 from experts.medsam2_volume import (
+    MedSAM2VolumeSegmenter,
     SAM2MLXVolumeSegmenter,
     _hiera_pos_embed_sidecar_path,
     _use_multimask_official,
@@ -95,6 +96,40 @@ class SAM2MLXAdapterTests(unittest.TestCase):
         cleaned = prompt_connected_component(mask, 2, (7, 7, 13, 13))
         self.assertEqual(int(cleaned.sum()), 3 * 4 * 4)
         self.assertFalse(cleaned[:, :7, :7].any())
+
+
+class TorchMedSAM2AdapterTests(unittest.TestCase):
+    def test_torch_backend_cleanup_keeps_component_anchored_to_prompt(self) -> None:
+        """CUDA/Torch postprocessing must not choose a larger remote component."""
+        segmenter = object.__new__(MedSAM2VolumeSegmenter)
+        segmenter.keep_largest_component = True
+        mask = np.zeros((5, 20, 20), dtype=bool)
+        mask[1:4, 8:12, 8:12] = True
+        mask[:, :7, :7] = True
+
+        cleaned = segmenter._postprocess_masks(
+            mask,
+            seed_index=2,
+            box_xyxy=(7, 7, 13, 13),
+        )
+
+        self.assertEqual(int(cleaned.sum()), 3 * 4 * 4)
+        self.assertFalse(cleaned[:, :7, :7].any())
+
+    def test_torch_backend_can_disable_prompt_component_cleanup(self) -> None:
+        segmenter = object.__new__(MedSAM2VolumeSegmenter)
+        segmenter.keep_largest_component = False
+        mask = np.zeros((3, 8, 8), dtype=bool)
+        mask[1, 2:4, 2:4] = True
+        mask[0, 0, 0] = True
+
+        cleaned = segmenter._postprocess_masks(
+            mask,
+            seed_index=1,
+            box_xyxy=(2, 2, 4, 4),
+        )
+
+        self.assertIs(cleaned, mask)
 
 
 if __name__ == "__main__":

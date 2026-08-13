@@ -8,18 +8,26 @@ the full-volume route additionally persists its accepted model output as DICOM S
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from experts.medsam_interactive import encode_binary_mask_rle
 
 from ..orthanc_client import OrthancClient
 from ..models import Series
+from ..reference_evaluation import (
+    ReferenceEvaluationError,
+    compare_prediction,
+    select_prompt_matched_references,
+)
 from ..schemas import (
+    DicomSegArtifactMetadata,
     SegmentBoxRequest,
     SegmentBoxResponse,
     SegmentVolumeRequest,
@@ -35,6 +43,79 @@ from .deps import get_db
 
 router = APIRouter(prefix="/v1/series", tags=["segmentation"])
 logger = logging.getLogger(__name__)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _referenced_series_uids(dataset) -> set[str]:
+    return {
+        str(item.SeriesInstanceUID)
+        for item in getattr(dataset, "ReferencedSeriesSequence", [])
+        if getattr(item, "SeriesInstanceUID", None)
+    }
+
+
+def find_derived_dicom_seg(
+    storage_dir: Path,
+    *,
+    source_series_instance_uid: str,
+    seg_sop_instance_uid: str,
+) -> Path:
+    """Find a generated SEG by DICOM identity, never by a caller-provided filename.
+
+    The lookup is deliberately limited to regular, non-symlink ``.dcm`` files directly
+    inside this source series' ``derived`` directory.  A matching SOP Instance UID is
+    not sufficient: the object must also be DICOM Segmentation Storage and explicitly
+    reference the source Series Instance UID.  This keeps the route scoped to the
+    requested series even if an unrelated DICOM file is copied into the directory.
+    """
+    import pydicom
+    from pydicom.uid import SegmentationStorage
+
+    derived_dir = storage_dir / "derived"
+    if not derived_dir.is_dir():
+        raise FileNotFoundError(seg_sop_instance_uid)
+
+    resolved_derived_dir = derived_dir.resolve()
+    for path in sorted(derived_dir.glob("*.dcm")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            resolved_path = path.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved_path.parent != resolved_derived_dir:
+            continue
+        try:
+            dataset = pydicom.dcmread(
+                str(resolved_path),
+                stop_before_pixels=True,
+                specific_tags=[
+                    "SOPClassUID",
+                    "SOPInstanceUID",
+                    "Modality",
+                    "ReferencedSeriesSequence",
+                ],
+            )
+        except Exception:  # noqa: BLE001 - malformed derived objects are not artifacts
+            continue
+        if str(getattr(dataset, "SOPInstanceUID", "")) != seg_sop_instance_uid:
+            continue
+        if str(getattr(dataset, "SOPClassUID", "")) != str(SegmentationStorage):
+            continue
+        if str(getattr(dataset, "Modality", "")) != "SEG":
+            continue
+        if source_series_instance_uid not in _referenced_series_uids(dataset):
+            continue
+        return resolved_path
+
+    raise FileNotFoundError(seg_sop_instance_uid)
 
 
 def find_instance_file(storage_dir: Path, sop_instance_uid: str) -> Path:
@@ -123,6 +204,44 @@ def segment_box(
     )
 
 
+@router.get("/{series_id}/segmentations/{seg_sop_instance_uid}/dicom")
+def download_dicom_seg(
+    series_id: str,
+    seg_sop_instance_uid: str,
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Download one persisted, source-bound DICOM SEG artifact."""
+    series = db.get(Series, series_id)
+    if series is None:
+        raise HTTPException(status_code=404, detail=f"no series {series_id!r}")
+
+    try:
+        seg_path = find_derived_dicom_seg(
+            Path(series.storage_dir),
+            source_series_instance_uid=series.dicom_series_uid,
+            seg_sop_instance_uid=seg_sop_instance_uid,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "no derived DICOM SEG with "
+                f"SOPInstanceUID={seg_sop_instance_uid!r} for series {series_id!r}"
+            ),
+        ) from exc
+
+    sha256 = _sha256_file(seg_path)
+    return FileResponse(
+        seg_path,
+        media_type="application/dicom",
+        filename=f"{seg_sop_instance_uid}.dcm",
+        headers={
+            "ETag": f'"{sha256}"',
+            "X-Content-SHA256": sha256,
+        },
+    )
+
+
 @router.post("/{series_id}/segment-volume", response_model=SegmentVolumeResponse)
 def segment_volume(
     series_id: str,
@@ -190,6 +309,7 @@ def _segment_volume_unlocked(
     label: str,
 ) -> SegmentVolumeResponse:
     """Execute one resource-heavy request after the caller owns the inference slot."""
+    reference_selection = None
     try:
         source = load_dicom_volume(
             Path(series.storage_dir),
@@ -198,6 +318,22 @@ def _segment_volume_unlocked(
             window_center=payload.window_center,
             window_width=payload.window_width,
         )
+        # Fix the reader target from the source identity + prompt before inference.
+        # The prediction is deliberately unavailable to this selection step, so the
+        # API cannot inflate agreement by choosing the reader with the best Dice.
+        try:
+            reference_selection = select_prompt_matched_references(
+                Path(series.storage_dir) / "reference",
+                source_sop_instance_uids=source.sop_instance_uids,
+                source_shape=source.display_volume.shape,
+                seed_sop_instance_uid=payload.sop_instance_uid,
+                box_xyxy=payload.box_xyxy,
+            )
+        except ReferenceEvaluationError as exc:
+            # A staged reference is auxiliary evidence, not a reason to discard a
+            # completed clinical interaction.  Strict identity failures suppress the
+            # comparison rather than falling back to unsafe frame-order alignment.
+            logger.warning("Staged DICOM SEG comparison disabled: %s", exc)
         mask = segmenter.segment_volume(
             source.display_volume,
             source.seed_index,
@@ -208,6 +344,21 @@ def _segment_volume_unlocked(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    reference_comparison = None
+    if reference_selection is not None:
+        try:
+            reference_comparison = compare_prediction(
+                mask,
+                reference_selection,
+                voxel_volume_mm3=(
+                    source.row_spacing_mm
+                    * source.column_spacing_mm
+                    * source.slice_spacing_mm
+                ),
+            ).as_dict()
+        except ReferenceEvaluationError as exc:
+            logger.warning("Staged DICOM SEG comparison failed: %s", exc)
 
     derived_dir = Path(series.storage_dir) / "derived"
     # Keep the artifact name backend-neutral: on Apple Silicon this may come from
@@ -223,6 +374,16 @@ def _segment_volume_unlocked(
         )
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"DICOM SEG creation failed: {exc}") from exc
+
+    artifact = DicomSegArtifactMetadata(
+        download_path=(
+            f"/v1/series/{series.id}/segmentations/{seg_sop_uid}/dicom"
+        ),
+        sha256=_sha256_file(seg_path),
+        byte_length=seg_path.stat().st_size,
+        series_instance_uid=seg_series_uid,
+        sop_instance_uid=seg_sop_uid,
+    )
 
     orthanc_status = "disabled"
     warning = None
@@ -258,9 +419,12 @@ def _segment_volume_unlocked(
         voxel_count=measurements.voxel_count,
         volume_ml=measurements.volume_ml,
         axial_bbox_diagonal_mm=measurements.axial_bbox_diagonal_mm,
+        craniocaudal_extent_mm=measurements.craniocaudal_extent_mm,
         model_version=segmenter.version,
         dicom_seg_series_instance_uid=seg_series_uid,
         dicom_seg_sop_instance_uid=seg_sop_uid,
+        dicom_seg_artifact=artifact,
+        reference_comparison=reference_comparison,
         orthanc_status=orthanc_status,
         warning=warning,
     )

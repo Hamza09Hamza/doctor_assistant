@@ -26,14 +26,8 @@
       name="application-name"
       content="Clinique Amina"
     />
-    <!--
-      Clinique Amina brand type: Playfair Display (headings/wordmark, via the
-      `font-serif` Tailwind utility — see tailwind.config.js) + Inter (body,
-      already the app-wide default). Self-hosted font files aren't vendored
-      anywhere in this OHIF checkout (Inter itself falls back to the system
-      sans-serif stack without this), so both are loaded from Google Fonts
-      rather than only adding Playfair Display and leaving Inter unloaded.
-    -->
+    <!-- IBM Plex is deliberately shared by interface and imaging data: Sans for
+      controls/readable prose, Mono for W/L, measurements and model provenance. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
       rel="preconnect"
@@ -41,7 +35,7 @@
       crossorigin
     />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <meta

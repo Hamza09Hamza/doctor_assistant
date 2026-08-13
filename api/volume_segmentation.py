@@ -31,13 +31,17 @@ class LoadedDicomVolume:
     row_spacing_mm: float
     column_spacing_mm: float
     slice_spacing_mm: float
+    slice_coordinates_mm: tuple[float, ...]
 
 
 @dataclass(frozen=True)
 class VolumeMeasurements:
     voxel_count: int
     volume_ml: float
+    # Maximum diagonal of an axis-aligned 2D bounding box on any axial slice.
+    # This is deliberately not called a lesion long axis or "axial span".
     axial_bbox_diagonal_mm: float
+    craniocaudal_extent_mm: float
     segmented_slice_count: int
 
 
@@ -211,6 +215,11 @@ def load_dicom_volume(
         row_spacing_mm=row_spacing,
         column_spacing_mm=column_spacing,
         slice_spacing_mm=_slice_spacing(datasets),
+        slice_coordinates_mm=tuple(
+            coordinate
+            for dataset in datasets
+            if (coordinate := _spatial_coordinate(dataset)) is not None
+        ),
     )
 
 
@@ -238,10 +247,25 @@ def measure_volume(mask, source: LoadedDicomVolume) -> VolumeMeasurements:
         row_span = (int(rows.max()) - int(rows.min()) + 1) * source.row_spacing_mm
         column_span = (int(columns.max()) - int(columns.min()) + 1) * source.column_spacing_mm
         max_diagonal = max(max_diagonal, float(np.hypot(row_span, column_span)))
+    occupied_slice_indices = np.flatnonzero(arr.any(axis=(1, 2)))
+    if not occupied_slice_indices.size:
+        craniocaudal_extent_mm = 0.0
+    elif len(source.slice_coordinates_mm) == arr.shape[0]:
+        first = source.slice_coordinates_mm[int(occupied_slice_indices[0])]
+        last = source.slice_coordinates_mm[int(occupied_slice_indices[-1])]
+        # Add one representative slice thickness: coordinate difference measures
+        # centre-to-centre extent, while occupied-mask extent includes both end slices.
+        craniocaudal_extent_mm = abs(last - first) + source.slice_spacing_mm
+    else:
+        craniocaudal_extent_mm = (
+            float(occupied_slice_indices[-1] - occupied_slice_indices[0] + 1)
+            * source.slice_spacing_mm
+        )
     return VolumeMeasurements(
         voxel_count=voxel_count,
         volume_ml=volume_ml,
         axial_bbox_diagonal_mm=max_diagonal,
+        craniocaudal_extent_mm=craniocaudal_extent_mm,
         segmented_slice_count=int(np.count_nonzero(arr.any(axis=(1, 2)))),
     )
 

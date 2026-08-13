@@ -6,6 +6,8 @@ test-double segmenter (no real MedSAM checkpoint/torch/GPU) — offline and fast
 
 from __future__ import annotations
 
+import hashlib
+from io import BytesIO
 import tempfile
 import unittest
 from pathlib import Path
@@ -209,6 +211,7 @@ class VolumeSegmentationRouteTests(unittest.TestCase):
         engine = build_engine(database_url)
         self.addCleanup(engine.dispose)
         session_factory = build_session_factory(engine)
+        self.session_factory = session_factory
         with session_factory() as db:
             study = Study(modality="ct", body_part="chest", source_filename="x", source="orthanc")
             db.add(study)
@@ -260,6 +263,96 @@ class VolumeSegmentationRouteTests(unittest.TestCase):
         self.assertEqual(str(seg.SOPInstanceUID), body["dicom_seg_sop_instance_uid"])
         self.assertEqual(str(seg.StudyInstanceUID), self.study_uid)
         self.assertEqual(str(seg.ReferencedSeriesSequence[0].SeriesInstanceUID), self.series_uid)
+
+        artifact = body["dicom_seg_artifact"]
+        self.assertEqual(
+            artifact["download_path"],
+            (
+                f"/v1/series/{self.series_id}/segmentations/"
+                f"{body['dicom_seg_sop_instance_uid']}/dicom"
+            ),
+        )
+        self.assertEqual(
+            artifact["series_instance_uid"], body["dicom_seg_series_instance_uid"]
+        )
+        self.assertEqual(
+            artifact["sop_instance_uid"], body["dicom_seg_sop_instance_uid"]
+        )
+        self.assertEqual(artifact["byte_length"], seg_files[0].stat().st_size)
+        self.assertEqual(
+            artifact["sha256"], hashlib.sha256(seg_files[0].read_bytes()).hexdigest()
+        )
+
+    def test_dicom_seg_artifact_download_preserves_bytes_and_content_type(self) -> None:
+        created = self.client.post(
+            f"/v1/series/{self.series_id}/segment-volume",
+            json={
+                "sop_instance_uid": self.sop_uids[1],
+                "box_xyxy": [7, 7, 14, 14],
+                "publish_to_orthanc": False,
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        artifact = created.json()["dicom_seg_artifact"]
+
+        downloaded = self.client.get(artifact["download_path"])
+
+        self.assertEqual(downloaded.status_code, 200, downloaded.text)
+        self.assertEqual(downloaded.headers["content-type"], "application/dicom")
+        self.assertEqual(int(downloaded.headers["content-length"]), artifact["byte_length"])
+        self.assertEqual(downloaded.headers["x-content-sha256"], artifact["sha256"])
+        self.assertEqual(hashlib.sha256(downloaded.content).hexdigest(), artifact["sha256"])
+        dataset = pydicom.dcmread(BytesIO(downloaded.content), stop_before_pixels=True)
+        self.assertEqual(str(dataset.Modality), "SEG")
+        self.assertEqual(str(dataset.SOPInstanceUID), artifact["sop_instance_uid"])
+
+    def test_dicom_seg_artifact_download_is_scoped_to_its_source_series(self) -> None:
+        created = self.client.post(
+            f"/v1/series/{self.series_id}/segment-volume",
+            json={
+                "sop_instance_uid": self.sop_uids[1],
+                "box_xyxy": [7, 7, 14, 14],
+                "publish_to_orthanc": False,
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        seg_sop_uid = created.json()["dicom_seg_sop_instance_uid"]
+
+        # Point a second API series row at the same directory. The requested SEG file
+        # exists there, but its DICOM reference identifies the original source series,
+        # so the download route must still reject it.
+        with self.session_factory() as db:
+            study = Study(
+                modality="ct",
+                body_part="chest",
+                source_filename="other",
+                source="orthanc",
+            )
+            db.add(study)
+            db.flush()
+            other = Series(
+                study_id=study.id,
+                dicom_series_uid=generate_uid(),
+                dicom_modality="CT",
+                modality="ct",
+                body_part="chest",
+                instance_count=3,
+                storage_dir=str(self.storage_dir),
+                analysis_eligible=True,
+            )
+            db.add(other)
+            db.commit()
+            other_series_id = other.id
+
+        wrong_uid = self.client.get(
+            f"/v1/series/{self.series_id}/segmentations/{generate_uid()}/dicom"
+        )
+        wrong_series = self.client.get(
+            f"/v1/series/{other_series_id}/segmentations/{seg_sop_uid}/dicom"
+        )
+
+        self.assertEqual(wrong_uid.status_code, 404)
+        self.assertEqual(wrong_series.status_code, 404)
 
     def test_unconfigured_medsam2_is_503(self) -> None:
         self.app.state.medsam2 = None

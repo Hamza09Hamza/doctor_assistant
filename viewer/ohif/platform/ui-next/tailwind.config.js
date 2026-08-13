@@ -11,13 +11,12 @@ module.exports = {
   theme: {
     // `theme.fontFamily` (not `extend.fontFamily`) fully replaces Tailwind's default
     // sans/serif/mono map — before this, no `font-serif` utility existed anywhere in
-    // this app. `serif` here is Clinique Amina's brand type for headings/wordmark
-    // (Playfair Display, loaded in platform/app/public/html-templates/index.html);
-    // `sans`/`inter` both stay Inter so `font-sans`/`font-inter` are interchangeable.
+    // this app. IBM Plex Sans is the shared clinical interface family; keep the historical
+    // `inter` key mapped to it so stock `font-inter` classes remain coherent.
     fontFamily: {
-      inter: ['Inter', 'sans-serif'],
-      sans: ['Inter', 'sans-serif'],
-      serif: ['"Playfair Display"', 'serif'],
+      inter: ['"IBM Plex Sans"', 'Inter', 'sans-serif'],
+      sans: ['"IBM Plex Sans"', 'Inter', 'sans-serif'],
+      serif: ['"IBM Plex Sans"', 'Inter', 'sans-serif'],
     },
     fontSize: {
       xxs: '0.625rem', // 10px

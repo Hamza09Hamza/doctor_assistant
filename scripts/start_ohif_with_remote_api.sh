@@ -32,9 +32,10 @@ if [[ ! -x "$RSPACK_BIN" ]]; then
   exit 1
 fi
 
-# Keep the viewer itself bounded on the 16 GB Mac. This is only the UI compiler;
-# all Torch/MedSAM2 work stays in Colab.
-export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=4096}"
+# Keep the viewer itself bounded on the 16 GB Mac. This launcher owns the UI
+# compiler process, so an inherited large Node heap must not defeat the guard;
+# all Torch/MONAI/MedSAM2 work stays in Colab.
+export NODE_OPTIONS="--max-old-space-size=2048"
 export NODE_ENV=development
 export OHIF_OPEN=false
 export PROXY_TARGET=http://localhost:3000/pacs/dicom-web

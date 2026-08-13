@@ -5,9 +5,9 @@ export default function getPanelModule() {
   return [
     {
       name: 'findingsPanel',
-      iconName: 'tab-patient-info',
-      iconLabel: 'Findings',
-      label: 'AI Findings',
+      iconName: 'tab-4d',
+      iconLabel: 'AI review',
+      label: 'AI Review',
       component: () => <DoctorAssistantPanel />,
     },
   ];

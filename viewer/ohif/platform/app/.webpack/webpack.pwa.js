@@ -220,6 +220,15 @@ module.exports = (env, argv) => {
           context: ['/dicomweb'],
           target: 'http://localhost:5000',
         },
+        {
+          // Browser-side bridge for saving a remote Colab DICOM SEG into the
+          // native Mac Orthanc. Kept separate from DICOMweb because Orthanc's
+          // instance upload endpoint is part of its REST API.
+          context: ['/local-orthanc-rest'],
+          target: 'http://localhost:8042',
+          changeOrigin: true,
+          pathRewrite: { '^/local-orthanc-rest': '' },
+        },
         ...(DOCTOR_ASSISTANT_API_TARGET
           ? [
               {
@@ -270,6 +279,12 @@ module.exports = (env, argv) => {
         pathRewrite: {
           [`^${PROXY_PATH_REWRITE_FROM}`]: PROXY_PATH_REWRITE_TO,
         },
+      },
+      {
+        context: ['/local-orthanc-rest'],
+        target: 'http://localhost:8042',
+        changeOrigin: true,
+        pathRewrite: { '^/local-orthanc-rest': '' },
       },
       // This block fully replaces devServer.proxy above (not merges), so the
       // doctor-assistant-api entry has to be re-added here too or dev:doctor-assistant

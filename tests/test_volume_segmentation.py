@@ -69,6 +69,7 @@ class VolumePreparationTests(unittest.TestCase):
                 measured.axial_bbox_diagonal_mm,
                 np.hypot(4 * 0.5, 5 * 0.75),
             )
+            self.assertAlmostEqual(measured.craniocaudal_extent_mm, 2 * 2.5)
 
     def test_unknown_seed_uid_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
