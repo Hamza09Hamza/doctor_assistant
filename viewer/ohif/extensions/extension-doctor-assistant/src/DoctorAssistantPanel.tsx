@@ -19,14 +19,58 @@ import { selectLungNoduleCandidate } from './lungNoduleCandidateEvents';
 
 const POLL_INTERVAL_MS = 1500;
 
+type SeriesDisplaySet = {
+  SeriesInstanceUID?: string;
+  Modality?: string;
+  isOverlayDisplaySet?: boolean;
+  referencedSeriesInstanceUID?: string;
+  referencedDisplaySetInstanceUID?: string;
+};
+
+const OVERLAY_MODALITIES = new Set(['SEG', 'RTSTRUCT', 'SR', 'PR', 'PMAP']);
+
+/** Resolve an overlay such as DICOM SEG back to the image series it annotates. */
+export function resolveSourceSeriesInstanceUid(
+  displaySets: SeriesDisplaySet[] | undefined,
+  getDisplaySetByUID: (uid: string) => SeriesDisplaySet | undefined
+): string | null {
+  const first = displaySets?.[0];
+  if (!first) {
+    return null;
+  }
+
+  if (first.referencedSeriesInstanceUID) {
+    return first.referencedSeriesInstanceUID;
+  }
+  if (first.referencedDisplaySetInstanceUID) {
+    const referenced = getDisplaySetByUID(first.referencedDisplaySetInstanceUID);
+    if (referenced?.SeriesInstanceUID) {
+      return referenced.SeriesInstanceUID;
+    }
+  }
+
+  const firstIsOverlay =
+    first.isOverlayDisplaySet || OVERLAY_MODALITIES.has(String(first.Modality || '').toUpperCase());
+  if (!firstIsOverlay && first.SeriesInstanceUID) {
+    return first.SeriesInstanceUID;
+  }
+
+  const sourceImages = displaySets.find(displaySet => {
+    const modality = String(displaySet.Modality || '').toUpperCase();
+    return (
+      displaySet.SeriesInstanceUID &&
+      !displaySet.isOverlayDisplaySet &&
+      !OVERLAY_MODALITIES.has(modality)
+    );
+  });
+  return sourceImages?.SeriesInstanceUID ?? null;
+}
+
 /**
- * Read the active display set's SeriesInstanceUID the same way OHIF's own
- * `usePatientInfo` hook reads patient info — `displaySetService.getActiveDisplaySets()`
- * plus a `DISPLAY_SETS_ADDED` subscription (AGENTS.md: prefer service pub/sub over
- * useEffect polling). `displaySet.SeriesInstanceUID` is confirmed as a direct field
- * (extensions/default/src/MergeDataSource/index.ts). Reacting to a same-study viewport
- * switch (not just newly-added display sets) is a real gap worth confirming against a
- * multi-series study once this is running for real — flagged rather than assumed.
+ * Read the source image series from OHIF's active display sets. A study can put a
+ * DICOM SEG first (as LIDC-IDRI-0117 does), so using `displaySets[0].SeriesInstanceUID`
+ * directly would query the API for the reader SEG and incorrectly report that the CT
+ * was not imported.
  */
 function useActiveSeriesInstanceUid(): string | null {
   const { servicesManager } = useSystem();
@@ -35,8 +79,9 @@ function useActiveSeriesInstanceUid(): string | null {
 
   const readActiveSeries = useCallback(() => {
     const displaySets = displaySetService.getActiveDisplaySets();
-    const displaySet = displaySets?.[0];
-    setSeriesInstanceUid(displaySet?.SeriesInstanceUID ?? null);
+    setSeriesInstanceUid(
+      resolveSourceSeriesInstanceUid(displaySets, uid => displaySetService.getDisplaySetByUID(uid))
+    );
   }, [displaySetService]);
 
   useEffect(() => {
