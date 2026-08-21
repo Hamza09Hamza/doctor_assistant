@@ -42,9 +42,13 @@ bash scripts/start_orthanc_macos.sh
 Terminal B:
 
 ```bash
-source .venv-mlx/bin/activate
+source .venv-demo/bin/activate
 python scripts/prepare_lidc_nodule_detector_demo.py --upload-orthanc
 ```
+
+If `.venv-demo` does not exist yet, create it once with Python 3.13 and install
+`requirements-macos-demo.txt`. This environment only stages and uploads DICOM; it does
+not contain a model runtime.
 
 Terminal C:
 
