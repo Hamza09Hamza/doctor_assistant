@@ -124,7 +124,8 @@ def _ensure_data(cache_dir: Path) -> tuple[list[tuple[object, Path]], list[Path]
         from idc_index import IDCClient
     except ImportError as exc:
         raise RuntimeError(
-            "idc-index is required; use .venv-mlx or install idc-index==0.12.5"
+            "idc-index is required; activate .venv-demo or install "
+            "requirements-macos-demo.txt"
         ) from exc
 
     client = IDCClient()

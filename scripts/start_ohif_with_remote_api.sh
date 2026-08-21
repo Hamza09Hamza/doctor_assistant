@@ -28,7 +28,8 @@ if [[ -x "$NODE24_BIN/node" ]]; then
 fi
 RSPACK_BIN="$REPO_ROOT/viewer/ohif/node_modules/.bin/rspack"
 if [[ ! -x "$RSPACK_BIN" ]]; then
-  echo "OHIF dependencies are missing. Reinstall viewer/ohif dependencies with Node 24 first." >&2
+  echo "OHIF dependencies are missing. From viewer/ohif, run:" >&2
+  echo "  PATH=/opt/homebrew/opt/node@24/bin:\$PATH NODE_OPTIONS=--max-old-space-size=2048 corepack pnpm install --frozen-lockfile" >&2
   exit 1
 fi
 

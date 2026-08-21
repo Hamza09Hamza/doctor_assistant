@@ -40,10 +40,20 @@ archive and serves it through the already-running ngrok API tunnel. Copy the pri
 terminal. This avoids Colab's unreliable browser-file transfer and does not create a
 second ngrok tunnel.
 
-In another terminal, stage and upload the pinned detector demo:
+Create the lightweight, upload-only Mac environment once. It deliberately excludes
+Torch, MONAI, MLX, and every inference runtime:
 
 ```bash
-source .venv-mlx/bin/activate
+/opt/homebrew/bin/python3.13 -m venv .venv-demo
+source .venv-demo/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-macos-demo.txt
+```
+
+Then, in another terminal, stage and upload the pinned detector demo:
+
+```bash
+source .venv-demo/bin/activate
 python scripts/prepare_lidc_nodule_detector_demo.py --upload-orthanc
 ```
 
